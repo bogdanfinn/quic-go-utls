@@ -6,10 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bogdanfinn/fhttp/httptest"
 
 	tls "github.com/bogdanfinn/utls"
 

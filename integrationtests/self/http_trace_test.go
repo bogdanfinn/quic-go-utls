@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http/httptrace"
 	"net/textproto"
 	"testing"
 	"time"
+
+	"github.com/bogdanfinn/fhttp/httptrace"
 
 	tls "github.com/bogdanfinn/utls"
 

@@ -2,9 +2,10 @@ package http3
 
 import (
 	"net"
-	"net/http/httptrace"
 	"net/textproto"
 	"time"
+
+	"github.com/bogdanfinn/fhttp/httptrace"
 
 	tls "github.com/bogdanfinn/utls"
 

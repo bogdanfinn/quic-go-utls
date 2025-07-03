@@ -7,11 +7,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/bogdanfinn/fhttp/httptrace"
 
 	tls "github.com/bogdanfinn/utls"
 

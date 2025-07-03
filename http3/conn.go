@@ -7,10 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http/httptrace"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bogdanfinn/fhttp/httptrace"
 
 	http "github.com/bogdanfinn/fhttp"
 

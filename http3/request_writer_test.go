@@ -3,8 +3,9 @@ package http3
 import (
 	"bytes"
 	"io"
-	"net/http/httptest"
 	"testing"
+
+	"github.com/bogdanfinn/fhttp/httptest"
 
 	http "github.com/bogdanfinn/fhttp"
 

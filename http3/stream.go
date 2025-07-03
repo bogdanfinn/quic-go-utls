@@ -5,8 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http/httptrace"
 	"time"
+
+	"github.com/bogdanfinn/fhttp/httptrace"
 
 	http "github.com/bogdanfinn/fhttp"
 

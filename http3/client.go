@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http/httptrace"
 	"net/textproto"
 	"time"
+
+	"github.com/bogdanfinn/fhttp/httptrace"
 
 	http "github.com/bogdanfinn/fhttp"
 

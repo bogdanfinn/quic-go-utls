@@ -10,7 +10,6 @@ import (
 	"io"
 	mrand "math/rand/v2"
 	"net"
-	"net/http/httptrace"
 	"net/textproto"
 	"os"
 	"strconv"
@@ -18,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/bogdanfinn/fhttp/httptrace"
 
 	tls "github.com/bogdanfinn/utls"
 

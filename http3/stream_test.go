@@ -5,11 +5,13 @@ import (
 	"context"
 	"io"
 	"math"
-	"net/http/httptest"
-	"net/http/httptrace"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bogdanfinn/fhttp/httptrace"
+
+	"github.com/bogdanfinn/fhttp/httptest"
 
 	http "github.com/bogdanfinn/fhttp"
 
