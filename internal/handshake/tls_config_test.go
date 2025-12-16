@@ -1,10 +1,11 @@
 package handshake
 
 import (
-	"github.com/bogdanfinn/utls"
 	"net"
 	"reflect"
 	"testing"
+
+	tls "github.com/bogdanfinn/utls"
 
 	"github.com/stretchr/testify/require"
 )

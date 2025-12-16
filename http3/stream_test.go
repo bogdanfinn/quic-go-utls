@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
+	http "github.com/bogdanfinn/fhttp"
+	"github.com/bogdanfinn/fhttp/httptest"
 	"github.com/bogdanfinn/fhttp/httptrace"
 
-	"github.com/bogdanfinn/fhttp/httptest"
-
-	http "github.com/bogdanfinn/fhttp"
-
 	"github.com/bogdanfinn/quic-go-utls"
-	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
+	"github.com/bogdanfinn/quic-go-utls/http3/qlog"
+	"github.com/bogdanfinn/quic-go-utls/qlogwriter"
+	"github.com/bogdanfinn/quic-go-utls/testutils/events"
 
 	"github.com/quic-go/qpack"
 
@@ -33,22 +33,25 @@ func TestStreamReadDataFrames(t *testing.T) {
 	var buf bytes.Buffer
 	mockCtrl := gomock.NewController(t)
 	qstr := NewMockDatagramStream(mockCtrl)
+	qstr.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
 	qstr.EXPECT().Write(gomock.Any()).DoAndReturn(buf.Write).AnyTimes()
 	qstr.EXPECT().Read(gomock.Any()).DoAndReturn(buf.Read).AnyTimes()
 
-	clientConn, _ := newConnPair(t)
+	var eventRecorder events.Recorder
+	clientConn, _ := newConnPairWithRecorder(t, &eventRecorder, nil)
 	str := newStream(
 		qstr,
 		newConnection(
 			clientConn.Context(),
 			clientConn,
 			false,
-			protocol.PerspectiveClient,
+			false, // client
 			nil,
 			0,
 		),
 		nil,
-		func(r io.Reader, u uint64) error { return nil },
+		func(io.Reader, *headersFrame) error { return nil },
+		&eventRecorder,
 	)
 
 	buf.Write(getDataFrame([]byte("foobar")))
@@ -62,12 +65,27 @@ func TestStreamReadDataFrames(t *testing.T) {
 	require.Equal(t, 3, n)
 	require.Equal(t, []byte("bar"), b)
 
+	expectedLen, _ := expectedFrameLength(t, &dataFrame{Length: 6})
+	require.Equal(t,
+		[]qlogwriter.Event{
+			qlog.FrameParsed{
+				StreamID: 42,
+				Raw:      qlog.RawInfo{Length: expectedLen, PayloadLength: 6},
+				Frame:    qlog.Frame{Frame: qlog.DataFrame{}},
+			},
+		},
+		eventRecorder.Events(qlog.FrameParsed{}),
+	)
+	eventRecorder.Clear()
+
 	buf.Write(getDataFrame([]byte("baz")))
 	b = make([]byte, 10)
 	n, err = str.Read(b)
 	require.NoError(t, err)
 	require.Equal(t, 3, n)
 	require.Equal(t, []byte("baz"), b[:n])
+	require.Len(t, eventRecorder.Events(qlog.FrameParsed{}), 1)
+	eventRecorder.Clear()
 
 	buf.Write(getDataFrame([]byte("lorem")))
 	buf.Write(getDataFrame([]byte("ipsum")))
@@ -75,6 +93,8 @@ func TestStreamReadDataFrames(t *testing.T) {
 	data, err := io.ReadAll(str)
 	require.NoError(t, err)
 	require.Equal(t, "loremipsum", string(data))
+	require.Len(t, eventRecorder.Events(qlog.FrameParsed{}), 2)
+	eventRecorder.Clear()
 
 	// invalid frame
 	buf.Write([]byte("invalid"))
@@ -89,15 +109,17 @@ func TestStreamInvalidFrame(t *testing.T) {
 
 	mockCtrl := gomock.NewController(t)
 	qstr := NewMockDatagramStream(mockCtrl)
+	qstr.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
 	qstr.EXPECT().Write(gomock.Any()).DoAndReturn(buf.Write).AnyTimes()
 	qstr.EXPECT().Read(gomock.Any()).DoAndReturn(buf.Read).AnyTimes()
 	clientConn, serverConn := newConnPair(t)
 
 	str := newStream(
 		qstr,
-		newConnection(context.Background(), clientConn, false, protocol.PerspectiveClient, nil, 0),
+		newConnection(context.Background(), clientConn, false, false, nil, 0),
 		nil,
-		func(r io.Reader, u uint64) error { return nil },
+		func(io.Reader, *headersFrame) error { return nil },
+		nil,
 	)
 
 	_, err := str.Read([]byte{0})
@@ -117,14 +139,17 @@ func TestStreamWrite(t *testing.T) {
 	var buf bytes.Buffer
 	mockCtrl := gomock.NewController(t)
 	qstr := NewMockDatagramStream(mockCtrl)
+	qstr.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
 	qstr.EXPECT().Write(gomock.Any()).DoAndReturn(buf.Write).AnyTimes()
-	str := newStream(qstr, nil, nil, func(r io.Reader, u uint64) error { return nil })
+	var eventRecorder events.Recorder
+	str := newStream(qstr, nil, nil, func(io.Reader, *headersFrame) error { return nil }, &eventRecorder)
 	str.Write([]byte("foo"))
 	str.Write([]byte("foobar"))
 
 	fp := frameParser{r: &buf}
-	f, err := fp.ParseNext()
+	f, err := fp.ParseNext(nil)
 	require.NoError(t, err)
+	f1Len, f1PayloadLen := expectedFrameLength(t, &dataFrame{Length: 3})
 	require.Equal(t, &dataFrame{Length: 3}, f)
 	b := make([]byte, 3)
 	_, err = io.ReadFull(&buf, b)
@@ -132,32 +157,51 @@ func TestStreamWrite(t *testing.T) {
 	require.Equal(t, []byte("foo"), b)
 
 	fp = frameParser{r: &buf}
-	f, err = fp.ParseNext()
+	f, err = fp.ParseNext(nil)
 	require.NoError(t, err)
+	f2Len, f2PayloadLen := expectedFrameLength(t, &dataFrame{Length: 6})
 	require.Equal(t, &dataFrame{Length: 6}, f)
 	b = make([]byte, 6)
 	_, err = io.ReadFull(&buf, b)
 	require.NoError(t, err)
 	require.Equal(t, []byte("foobar"), b)
+
+	require.Equal(t,
+		[]qlogwriter.Event{
+			qlog.FrameCreated{
+				StreamID: 42,
+				Raw:      qlog.RawInfo{Length: f1Len, PayloadLength: f1PayloadLen},
+				Frame:    qlog.Frame{Frame: qlog.DataFrame{}},
+			},
+			qlog.FrameCreated{
+				StreamID: 42,
+				Raw:      qlog.RawInfo{Length: f2Len, PayloadLength: f2PayloadLen},
+				Frame:    qlog.Frame{Frame: qlog.DataFrame{}},
+			},
+		},
+		eventRecorder.Events(qlog.FrameCreated{}),
+	)
 }
 
 func TestRequestStream(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	qstr := NewMockDatagramStream(mockCtrl)
+	qstr.EXPECT().StreamID().Return(quic.StreamID(42)).AnyTimes()
 	requestWriter := newRequestWriter()
 	clientConn, _ := newConnPair(t)
 	str := newRequestStream(
 		newStream(
 			qstr,
-			newConnection(context.Background(), clientConn, false, protocol.PerspectiveClient, nil, 0),
+			newConnection(context.Background(), clientConn, false, false, nil, 0),
 			&httptrace.ClientTrace{},
-			func(r io.Reader, u uint64) error { return nil },
+			func(io.Reader, *headersFrame) error { return nil },
+			nil,
 		),
 		requestWriter,
 		make(chan struct{}),
-		qpack.NewDecoder(func(qpack.HeaderField) {}),
+		qpack.NewDecoder(),
 		true,
-		math.MaxUint64,
+		math.MaxInt,
 		&http.Response{},
 	)
 

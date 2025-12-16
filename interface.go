@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"time"
 
 	tls "github.com/bogdanfinn/utls"
 
 	"github.com/bogdanfinn/quic-go-utls/internal/handshake"
 	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
-	"github.com/bogdanfinn/quic-go-utls/logging"
+	"github.com/bogdanfinn/quic-go-utls/qlogwriter"
 )
 
 // The StreamID is the ID of a QUIC stream.
@@ -25,6 +26,12 @@ const (
 	// Version2 is RFC 9369
 	Version2 = protocol.Version2
 )
+
+// SupportedVersions returns the support versions, sorted in descending order of preference.
+func SupportedVersions() []Version {
+	// clone the slice to prevent the caller from modifying the slice
+	return slices.Clone(protocol.SupportedVersions)
+}
 
 // A ClientToken is a token received by the client.
 // It can be used to skip address validation on future connection attempts.
@@ -183,7 +190,8 @@ type Config struct {
 	// Enable QUIC Stream Resets with Partial Delivery.
 	// See https://datatracker.ietf.org/doc/html/draft-ietf-quic-reliable-stream-reset-07.
 	EnableStreamResetPartialDelivery bool
-	Tracer                           func(context.Context, logging.Perspective, ConnectionID) *logging.ConnectionTracer
+
+	Tracer func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
 }
 
 // ClientHelloInfo contains information about an incoming connection attempt.

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bogdanfinn/quic-go-utls/internal/ackhandler"
+	"github.com/bogdanfinn/quic-go-utls/internal/monotime"
 	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
 	"github.com/bogdanfinn/quic-go-utls/internal/utils"
 	"github.com/bogdanfinn/quic-go-utls/internal/wire"
@@ -29,7 +30,7 @@ func TestPathManagerIntentionalMigration(t *testing.T) {
 		func(id pathID) { retiredConnIDs = append(retiredConnIDs, connIDs[id]) },
 		utils.DefaultLogger,
 	)
-	now := time.Now()
+	now := monotime.Now()
 	connID, frames, shouldSwitch := pm.HandlePacket(
 		&net.UDPAddr{IP: net.IPv4(1, 2, 3, 4), Port: 1000},
 		now,
@@ -132,7 +133,7 @@ func TestPathManagerMultipleProbes(t *testing.T) {
 		func(id pathID) {},
 		utils.DefaultLogger,
 	)
-	now := time.Now()
+	now := monotime.Now()
 	// first receive a packet without a PATH_CHALLENGE
 	connID, frames, shouldSwitch := pm.HandlePacket(
 		&net.UDPAddr{IP: net.IPv4(1, 2, 3, 4), Port: 1000},
@@ -187,7 +188,7 @@ func TestPathManagerNATRebinding(t *testing.T) {
 		utils.DefaultLogger,
 	)
 
-	now := time.Now()
+	now := monotime.Now()
 	connID, frames, shouldSwitch := pm.HandlePacket(&net.UDPAddr{IP: net.IPv4(1, 2, 3, 4), Port: 1000}, now, nil, true)
 	require.Equal(t, connIDs[0], connID)
 	require.Len(t, frames, 1)
@@ -219,7 +220,7 @@ func TestPathManagerLimits(t *testing.T) {
 		utils.DefaultLogger,
 	)
 
-	now := time.Now()
+	now := monotime.Now()
 	firstPathTime := now
 	var firstPathConnID protocol.ConnectionID
 	require.Greater(t, pathTimeout, maxPaths*time.Second)

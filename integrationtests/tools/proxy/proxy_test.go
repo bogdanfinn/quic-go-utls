@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bogdanfinn/quic-go-utls/internal/monotime"
 	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
 	"github.com/bogdanfinn/quic-go-utls/internal/wire"
 
@@ -25,7 +26,7 @@ func TestPacketQueue(t *testing.T) {
 	}
 
 	require.Empty(t, getPackets())
-	now := time.Now()
+	now := monotime.Now()
 
 	q.Add(packetEntry{Time: now, Raw: []byte("p3")})
 	require.Equal(t, []string{"p3"}, getPackets())

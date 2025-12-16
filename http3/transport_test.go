@@ -10,14 +10,11 @@ import (
 	"testing"
 	"time"
 
+	http "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/fhttp/httptest"
-
 	tls "github.com/bogdanfinn/utls"
 
-	http "github.com/bogdanfinn/fhttp"
-
 	"github.com/bogdanfinn/quic-go-utls"
-	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -211,7 +208,7 @@ func TestTransportDatagrams(t *testing.T) {
 
 func TestTransportMultipleQUICVersions(t *testing.T) {
 	qconf := &quic.Config{
-		Versions: []quic.Version{protocol.Version2, protocol.Version1},
+		Versions: []quic.Version{quic.Version2, quic.Version1},
 	}
 	tr := &Transport{QUICConfig: qconf}
 	req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
@@ -551,4 +548,25 @@ func TestTransportCloseIdleConnections(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timeout")
 	}
+}
+
+func TestTransportClose(t *testing.T) {
+	mockCtrl := gomock.NewController(t)
+	tr := &Transport{
+		Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+			return nil, nil
+		},
+		newClientConn: func(*quic.Conn) clientConn {
+			cl := NewMockClientConn(mockCtrl)
+			cl.EXPECT().RoundTrip(gomock.Any()).Return(nil, nil)
+			return cl
+		},
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://example.com", nil)
+	require.NoError(t, err)
+	_, err = tr.RoundTrip(req)
+	require.NoError(t, err)
+	require.NoError(t, tr.Close())
+	_, err = tr.RoundTrip(req)
+	require.ErrorIs(t, err, ErrTransportClosed)
 }

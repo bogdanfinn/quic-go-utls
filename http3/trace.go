@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/bogdanfinn/fhttp/httptrace"
-
 	tls "github.com/bogdanfinn/utls"
 
 	"github.com/bogdanfinn/quic-go-utls"

@@ -18,8 +18,8 @@ import (
 
 	"github.com/bogdanfinn/quic-go-utls"
 	"github.com/bogdanfinn/quic-go-utls/http3"
+	"github.com/bogdanfinn/quic-go-utls/http3/qlog"
 	"github.com/bogdanfinn/quic-go-utls/internal/testdata"
-	"github.com/bogdanfinn/quic-go-utls/qlog"
 )
 
 type binds []string

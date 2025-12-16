@@ -1,9 +1,10 @@
 package qtls
 
 import (
-	"github.com/bogdanfinn/utls"
 	"fmt"
 	"unsafe"
+
+	tls "github.com/bogdanfinn/utls"
 )
 
 //go:linkname cipherSuitesTLS13 crypto/tls.cipherSuitesTLS13

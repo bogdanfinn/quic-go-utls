@@ -12,13 +12,13 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
 
+	"github.com/bogdanfinn/quic-go-utls/internal/monotime"
 	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
 	"github.com/bogdanfinn/quic-go-utls/internal/utils"
 )
@@ -185,7 +185,7 @@ func (c *oobConn) ReadPacket() (receivedPacket, error) {
 	data := msg.OOB[:msg.NN]
 	p := receivedPacket{
 		remoteAddr: msg.Addr,
-		rcvTime:    time.Now(),
+		rcvTime:    monotime.Now(),
 		data:       msg.Buffers[0][:msg.N],
 		buffer:     buffer,
 	}

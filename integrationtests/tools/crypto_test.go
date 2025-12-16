@@ -1,11 +1,12 @@
 package tools
 
 import (
-	"github.com/bogdanfinn/utls"
 	"crypto/x509"
 	"io"
 	"net"
 	"testing"
+
+	tls "github.com/bogdanfinn/utls"
 
 	"github.com/stretchr/testify/require"
 )

@@ -1,8 +1,9 @@
 package handshake
 
 import (
-	"github.com/bogdanfinn/utls"
 	"net"
+
+	tls "github.com/bogdanfinn/utls"
 )
 
 func setupConfigForServer(conf *tls.Config, localAddr, remoteAddr net.Addr) *tls.Config {

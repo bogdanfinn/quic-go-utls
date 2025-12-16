@@ -1,7 +1,10 @@
 package http3
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"math"
 	"testing"
 
 	http "github.com/bogdanfinn/fhttp"
@@ -10,10 +13,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func decodeFromSlice(headers []qpack.HeaderField) qpack.DecodeFunc {
+	var i int
+	return func() (qpack.HeaderField, error) {
+		if i >= len(headers) {
+			return qpack.HeaderField{}, io.EOF
+		}
+		h := headers[i]
+		i++
+		return h, nil
+	}
+}
+
 func TestRequestHeaderParsing(t *testing.T) {
 	t.Run("regular path", func(t *testing.T) {
 		testRequestHeaderParsing(t, "/foo")
 	})
+
 	// see https://github.com/bogdanfinn/quic-go-utls/pull/1898
 	t.Run("path starting with //", func(t *testing.T) {
 		testRequestHeaderParsing(t, "//foo")
@@ -27,7 +43,7 @@ func testRequestHeaderParsing(t *testing.T, path string) {
 		{Name: ":method", Value: http.MethodGet},
 		{Name: "content-length", Value: "42"},
 	}
-	req, err := requestFromHeaders(headers)
+	req, err := requestFromHeaders(decodeFromSlice(headers), math.MaxInt, nil)
 	require.NoError(t, err)
 	require.Equal(t, http.MethodGet, req.Method)
 	require.Equal(t, path, req.URL.Path)
@@ -50,7 +66,7 @@ func TestRequestHeadersContentLength(t *testing.T) {
 			{Name: ":authority", Value: "quic-go.net"},
 			{Name: ":method", Value: http.MethodGet},
 		}
-		req, err := requestFromHeaders(headers)
+		req, err := requestFromHeaders(decodeFromSlice(headers), math.MaxInt, nil)
 		require.NoError(t, err)
 		require.Equal(t, int64(-1), req.ContentLength)
 	})
@@ -63,7 +79,7 @@ func TestRequestHeadersContentLength(t *testing.T) {
 			{Name: "content-length", Value: "42"},
 			{Name: "content-length", Value: "42"},
 		}
-		req, err := requestFromHeaders(headers)
+		req, err := requestFromHeaders(decodeFromSlice(headers), math.MaxInt, nil)
 		require.NoError(t, err)
 		require.Equal(t, "42", req.Header.Get("Content-Length"))
 	})
@@ -93,7 +109,7 @@ func TestRequestHeadersContentLengthValidation(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := requestFromHeaders(tc.headers)
+			_, err := requestFromHeaders(decodeFromSlice(tc.headers), math.MaxInt, nil)
 			if tc.errContains != "" {
 				require.ErrorContains(t, err, tc.errContains)
 			}
@@ -214,8 +230,9 @@ func TestRequestHeadersValidation(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := requestFromHeaders(tc.headers)
+			_, err := requestFromHeaders(decodeFromSlice(tc.headers), math.MaxInt, nil)
 			require.EqualError(t, err, tc.err)
+			require.NotErrorAs(t, err, new(*qpackError))
 		})
 	}
 }
@@ -228,7 +245,7 @@ func TestCookieHeader(t *testing.T) {
 		{Name: "cookie", Value: "cookie1=foobar1"},
 		{Name: "cookie", Value: "cookie2=foobar2"},
 	}
-	req, err := requestFromHeaders(headers)
+	req, err := requestFromHeaders(decodeFromSlice(headers), math.MaxInt, nil)
 	require.NoError(t, err)
 	require.Equal(t, http.Header{
 		"Cookie": []string{"cookie1=foobar1; cookie2=foobar2"},
@@ -244,7 +261,7 @@ func TestHeadersConcatenation(t *testing.T) {
 		{Name: "duplicate-header", Value: "1"},
 		{Name: "duplicate-header", Value: "2"},
 	}
-	req, err := requestFromHeaders(headers)
+	req, err := requestFromHeaders(decodeFromSlice(headers), math.MaxInt, nil)
 	require.NoError(t, err)
 	require.Equal(t, http.Header{
 		"Cache-Control":    []string{"max-age=0"},
@@ -257,7 +274,7 @@ func TestRequestHeadersConnect(t *testing.T) {
 		{Name: ":authority", Value: "quic-go.net"},
 		{Name: ":method", Value: http.MethodConnect},
 	}
-	req, err := requestFromHeaders(headers)
+	req, err := requestFromHeaders(decodeFromSlice(headers), math.MaxInt, nil)
 	require.NoError(t, err)
 	require.Equal(t, http.MethodConnect, req.Method)
 	require.Equal(t, "HTTP/3.0", req.Proto)
@@ -287,7 +304,7 @@ func TestRequestHeadersConnectValidation(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := requestFromHeaders(tc.headers)
+			_, err := requestFromHeaders(decodeFromSlice(tc.headers), math.MaxInt, nil)
 			require.EqualError(t, err, tc.err)
 		})
 	}
@@ -301,7 +318,7 @@ func TestRequestHeadersExtendedConnect(t *testing.T) {
 		{Name: ":authority", Value: "quic-go.net"},
 		{Name: ":path", Value: "/foo?val=1337"},
 	}
-	req, err := requestFromHeaders(headers)
+	req, err := requestFromHeaders(decodeFromSlice(headers), math.MaxInt, nil)
 	require.NoError(t, err)
 	require.Equal(t, http.MethodConnect, req.Method)
 	require.Equal(t, "webtransport", req.Proto)
@@ -316,7 +333,7 @@ func TestRequestHeadersExtendedConnectRequestValidation(t *testing.T) {
 		{Name: ":authority", Value: "quic.clemente.io"},
 		{Name: ":path", Value: "/foo"},
 	}
-	_, err := requestFromHeaders(headers)
+	_, err := requestFromHeaders(decodeFromSlice(headers), math.MaxInt, nil)
 	require.EqualError(t, err, "extended CONNECT: :scheme, :path and :authority must not be empty")
 }
 
@@ -326,7 +343,7 @@ func TestResponseHeaderParsing(t *testing.T) {
 		{Name: "content-length", Value: "42"},
 	}
 	rsp := &http.Response{}
-	require.NoError(t, updateResponseFromHeaders(rsp, headers))
+	require.NoError(t, updateResponseFromHeaders(rsp, decodeFromSlice(headers), math.MaxInt, nil))
 	require.Equal(t, "HTTP/3.0", rsp.Proto)
 	require.Equal(t, 3, rsp.ProtoMajor)
 	require.Zero(t, rsp.ProtoMinor)
@@ -376,7 +393,7 @@ func TestResponseHeaderParsingValidation(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := updateResponseFromHeaders(&http.Response{}, tc.headers)
+			err := updateResponseFromHeaders(&http.Response{}, decodeFromSlice(tc.headers), math.MaxInt, nil)
 			if tc.errContains != "" {
 				require.ErrorContains(t, err, tc.errContains)
 			}
@@ -401,7 +418,7 @@ func TestResponseHeaderParsingValidation(t *testing.T) {
 				{Name: ":status", Value: "404"},
 				{Name: tc.invalidField, Value: "some-value"},
 			}
-			err := updateResponseFromHeaders(&http.Response{}, headers)
+			err := updateResponseFromHeaders(&http.Response{}, decodeFromSlice(headers), math.MaxInt, nil)
 			require.EqualError(t, err, fmt.Sprintf("invalid header field name: %q", tc.invalidField))
 		})
 	}
@@ -414,7 +431,7 @@ func TestResponseTrailerFields(t *testing.T) {
 		{Name: "trailer", Value: "TRAILER3"},
 	}
 	var rsp http.Response
-	require.NoError(t, updateResponseFromHeaders(&rsp, headers))
+	require.NoError(t, updateResponseFromHeaders(&rsp, decodeFromSlice(headers), math.MaxInt, nil))
 	require.Equal(t, 0, len(rsp.Header))
 	require.Equal(t, http.Header(map[string][]string{
 		"Trailer1": nil,
@@ -428,20 +445,20 @@ func TestResponseTrailerParsingTE(t *testing.T) {
 		{Name: ":status", Value: "404"},
 		{Name: "te", Value: "trailers"},
 	}
-	require.NoError(t, updateResponseFromHeaders(&http.Response{}, headers))
+	require.NoError(t, updateResponseFromHeaders(&http.Response{}, decodeFromSlice(headers), math.MaxInt, nil))
 	headers = []qpack.HeaderField{
 		{Name: ":status", Value: "404"},
 		{Name: "te", Value: "not-trailers"},
 	}
 	require.EqualError(t,
-		updateResponseFromHeaders(&http.Response{}, headers),
+		updateResponseFromHeaders(&http.Response{}, decodeFromSlice(headers), math.MaxInt, nil),
 		`invalid TE header field value: "not-trailers"`)
 }
 
 func TestResponseTrailerParsing(t *testing.T) {
-	trailerHdr, err := parseTrailers([]qpack.HeaderField{
+	trailerHdr, err := parseTrailers(decodeFromSlice([]qpack.HeaderField{
 		{Name: "content-length", Value: "42"},
-	})
+	}), nil)
 	require.NoError(t, err)
 	require.Equal(t, "42", trailerHdr.Get("Content-Length"))
 }
@@ -450,6 +467,60 @@ func TestResponseTrailerParsingValidation(t *testing.T) {
 	headers := []qpack.HeaderField{
 		{Name: ":status", Value: "200"},
 	}
-	_, err := parseTrailers(headers)
+	_, err := parseTrailers(decodeFromSlice(headers), nil)
 	require.EqualError(t, err, "http3: received pseudo header in trailer: :status")
+}
+
+func TestQpackError(t *testing.T) {
+	buf := &bytes.Buffer{}
+	enc := qpack.NewEncoder(buf)
+	enc.WriteField(qpack.HeaderField{Name: ":status", Value: "200"})
+	enc.Close()
+
+	t.Run("header parsing", func(t *testing.T) {
+		dec := qpack.NewDecoder()
+		decodeFn := dec.Decode(buf.Bytes()[:len(buf.Bytes())/2])
+		_, err := requestFromHeaders(decodeFn, math.MaxInt, nil)
+		require.ErrorAs(t, err, new(*qpackError))
+	})
+
+	t.Run("trailer parsing", func(t *testing.T) {
+		dec := qpack.NewDecoder()
+		decodeFn := dec.Decode(buf.Bytes()[:len(buf.Bytes())/2])
+		err := updateResponseFromHeaders(&http.Response{}, decodeFn, math.MaxInt, nil)
+		require.ErrorAs(t, err, new(*qpackError))
+	})
+}
+
+func BenchmarkRequestFromHeaders(b *testing.B) {
+	b.ReportAllocs()
+
+	headers := []qpack.HeaderField{
+		{Name: ":path", Value: "/api/v1/users/12345"},
+		{Name: ":authority", Value: "quic-go.net"},
+		{Name: ":method", Value: http.MethodPost},
+		{Name: "content-type", Value: "application/json"},
+		{Name: "content-length", Value: "1024"},
+		{Name: "user-agent", Value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"},
+		{Name: "accept", Value: "application/json, text/plain, */*"},
+		{Name: "accept-encoding", Value: "gzip, deflate, br"},
+		{Name: "accept-language", Value: "en-US,en;q=0.9"},
+		{Name: "cache-control", Value: "no-cache"},
+		{Name: "cookie", Value: "session_id=abc123"},
+		{Name: "cookie", Value: "user_pref=dark_mode"},
+		{Name: "referer", Value: "https://quic-go.net/docs/http3/"},
+	}
+	var buf bytes.Buffer
+	enc := qpack.NewEncoder(&buf)
+	for _, hf := range headers {
+		require.NoError(b, enc.WriteField(hf))
+	}
+
+	dec := qpack.NewDecoder()
+	for b.Loop() {
+		decodeFn := dec.Decode(buf.Bytes())
+		if _, err := requestFromHeaders(decodeFn, math.MaxInt, nil); err != nil {
+			b.Fatalf("failed to parse request: %v", err)
+		}
+	}
 }

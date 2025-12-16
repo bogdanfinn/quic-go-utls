@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/bogdanfinn/quic-go-utls"
+	"github.com/bogdanfinn/quic-go-utls/http3/qlog"
+	"github.com/bogdanfinn/quic-go-utls/qlogwriter"
 	"github.com/bogdanfinn/quic-go-utls/quicvarint"
+	"github.com/bogdanfinn/quic-go-utls/testutils/events"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,7 +24,7 @@ func testFrameParserEOF(t *testing.T, data []byte) {
 		b := make([]byte, i)
 		copy(b, data[:i])
 		fp := frameParser{r: bytes.NewReader(b)}
-		_, err := fp.ParseNext()
+		_, err := fp.ParseNext(nil)
 		require.Error(t, err)
 		require.ErrorIs(t, err, io.EOF)
 	}
@@ -30,17 +33,19 @@ func testFrameParserEOF(t *testing.T, data []byte) {
 func TestParserReservedFrameType(t *testing.T) {
 	for _, ft := range []uint64{0x2, 0x6, 0x8, 0x9} {
 		t.Run(fmt.Sprintf("type %#x", ft), func(t *testing.T) {
-			client, server := newConnPair(t)
+			var eventRecorder events.Recorder
+			client, server := newConnPairWithDatagrams(t, nil, &eventRecorder)
 
 			data := quicvarint.Append(nil, ft)
 			data = quicvarint.Append(data, 6)
 			data = append(data, []byte("foobar")...)
 
 			fp := frameParser{
+				streamID:  42,
 				r:         bytes.NewReader(data),
 				closeConn: client.CloseWithError,
 			}
-			_, err := fp.ParseNext()
+			_, err := fp.ParseNext(&eventRecorder)
 			require.Error(t, err)
 			require.ErrorContains(t, err, "http3: reserved frame type")
 
@@ -53,6 +58,17 @@ func TestParserReservedFrameType(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("timeout")
 			}
+
+			require.Equal(t,
+				[]qlogwriter.Event{
+					qlog.FrameParsed{
+						StreamID: 42,
+						Raw:      qlog.RawInfo{Length: len(data), PayloadLength: 6},
+						Frame:    qlog.Frame{Frame: qlog.ReservedFrame{Type: ft}},
+					},
+				},
+				eventRecorder.Events(qlog.FrameParsed{}),
+			)
 		})
 	}
 }
@@ -70,7 +86,7 @@ func TestParserUnknownFrameType(t *testing.T) {
 
 	r := bytes.NewReader(data)
 	fp := frameParser{r: r}
-	f, err := fp.ParseNext()
+	f, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.IsType(t, &headersFrame{}, f)
 	hf = f.(*headersFrame)
@@ -79,6 +95,60 @@ func TestParserUnknownFrameType(t *testing.T) {
 	_, err = io.ReadFull(r, payload)
 	require.NoError(t, err)
 	require.Equal(t, []byte("foo"), payload)
+}
+
+func TestParserUnsupportedFrameTypes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ft   uint64
+		qf   any
+	}{
+		{name: "CANCEL_PUSH", ft: 0x3, qf: qlog.CancelPushFrame{}},
+		{name: "PUSH_PROMISE", ft: 0x5, qf: qlog.PushPromiseFrame{}},
+		{name: "MAX_PUSH_ID", ft: 0xd, qf: qlog.MaxPushIDFrame{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var eventRecorder events.Recorder
+
+			data := quicvarint.Append(nil, tc.ft)
+			data = quicvarint.Append(data, 6)
+			data = append(data, []byte("foobar")...)
+			df := &dataFrame{Length: 3}
+			data = df.Append(data)
+			data = append(data, []byte("foo")...)
+
+			r := bytes.NewReader(data)
+			fp := frameParser{streamID: 42, r: r}
+
+			f, err := fp.ParseNext(&eventRecorder)
+			require.NoError(t, err)
+			require.IsType(t, &dataFrame{}, f)
+			df = f.(*dataFrame)
+			require.Equal(t, uint64(3), df.Length)
+			payload := make([]byte, 3)
+			_, err = io.ReadFull(r, payload)
+			require.NoError(t, err)
+			require.Equal(t, []byte("foo"), payload)
+
+			headerLen := quicvarint.Len(tc.ft) + quicvarint.Len(6)
+			dfLen, _ := expectedFrameLength(t, df)
+			require.Equal(t,
+				[]qlogwriter.Event{
+					qlog.FrameParsed{
+						StreamID: 42,
+						Raw:      qlog.RawInfo{Length: headerLen, PayloadLength: 6},
+						Frame:    qlog.Frame{Frame: tc.qf},
+					},
+					qlog.FrameParsed{
+						StreamID: 42,
+						Raw:      qlog.RawInfo{Length: dfLen, PayloadLength: 3},
+						Frame:    qlog.Frame{Frame: qlog.DataFrame{}},
+					},
+				},
+				eventRecorder.Events(qlog.FrameParsed{}),
+			)
+		})
+	}
 }
 
 func TestParserHeadersFrame(t *testing.T) {
@@ -90,14 +160,14 @@ func TestParserHeadersFrame(t *testing.T) {
 	testFrameParserEOF(t, data)
 
 	// parse
-	f1, err := fp.ParseNext()
+	f1, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.IsType(t, &headersFrame{}, f1)
 	require.Equal(t, uint64(0x1337), f1.(*headersFrame).Length)
 
 	// write and parse
 	fp = frameParser{r: bytes.NewReader(f1.(*headersFrame).Append(nil))}
-	f2, err := fp.ParseNext()
+	f2, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.Equal(t, f1, f2)
 }
@@ -111,14 +181,14 @@ func TestDataFrame(t *testing.T) {
 	testFrameParserEOF(t, data)
 
 	// parse
-	f1, err := fp.ParseNext()
+	f1, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.IsType(t, &dataFrame{}, f1)
 	require.Equal(t, uint64(0x1337), f1.(*dataFrame).Length)
 
 	// write and parse
 	fp = frameParser{r: bytes.NewReader(f1.(*dataFrame).Append(nil))}
-	f2, err := fp.ParseNext()
+	f2, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.Equal(t, f1, f2)
 }
@@ -140,7 +210,7 @@ func TestParserSettingsFrame(t *testing.T) {
 	testFrameParserEOF(t, data)
 
 	fp := frameParser{r: bytes.NewReader(data)}
-	frame, err := fp.ParseNext()
+	frame, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.IsType(t, &settingsFrame{}, frame)
 	sf := frame.(*settingsFrame)
@@ -150,7 +220,7 @@ func TestParserSettingsFrame(t *testing.T) {
 
 	// write and parse
 	fp = frameParser{r: bytes.NewReader(sf.Append(nil))}
-	f2, err := fp.ParseNext()
+	f2, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.IsType(t, &settingsFrame{}, f2)
 	sf2 := f2.(*settingsFrame)
@@ -175,6 +245,11 @@ func TestParserSettingsFrameDuplicateSettings(t *testing.T) {
 			val:  1,
 		},
 		{
+			name: "max field section size",
+			num:  settingMaxFieldSectionSize,
+			val:  1337,
+		},
+		{
 			name: "datagram",
 			num:  settingDatagram,
 			val:  1,
@@ -187,11 +262,47 @@ func TestParserSettingsFrameDuplicateSettings(t *testing.T) {
 			data = quicvarint.Append(data, uint64(len(settings)))
 			data = append(data, settings...)
 			fp := frameParser{r: bytes.NewReader(data)}
-			_, err := fp.ParseNext()
+			_, err := fp.ParseNext(nil)
 			require.Error(t, err)
 			require.EqualError(t, err, fmt.Sprintf("duplicate setting: %d", tc.num))
 		})
 	}
+}
+
+func TestParserSettingsFrameMaxFieldSectionSize(t *testing.T) {
+	t.Run("absent", func(t *testing.T) {
+		testParserSettingsFrameMaxFieldSectionSize(t, false)
+	})
+
+	t.Run("with value", func(t *testing.T) {
+		testParserSettingsFrameMaxFieldSectionSize(t, true)
+	})
+}
+
+func testParserSettingsFrameMaxFieldSectionSize(t *testing.T, present bool) {
+	var settings []byte
+	if present {
+		settings = appendSetting(nil, settingMaxFieldSectionSize, 1337)
+	}
+	data := quicvarint.Append(nil, 4) // type byte
+	data = quicvarint.Append(data, uint64(len(settings)))
+	data = append(data, settings...)
+
+	fp := frameParser{r: bytes.NewReader(data)}
+	f, err := fp.ParseNext(nil)
+	require.NoError(t, err)
+	require.IsType(t, &settingsFrame{}, f)
+	sf := f.(*settingsFrame)
+	if present {
+		require.EqualValues(t, 1337, sf.MaxFieldSectionSize)
+	} else {
+		require.EqualValues(t, -1, sf.MaxFieldSectionSize)
+	}
+
+	fp = frameParser{r: bytes.NewReader(sf.Append(nil))}
+	f2, err := fp.ParseNext(nil)
+	require.NoError(t, err)
+	require.Equal(t, sf, f2)
 }
 
 func TestParserSettingsFrameDatagram(t *testing.T) {
@@ -216,14 +327,14 @@ func testParserSettingsFrameDatagram(t *testing.T, enabled bool) {
 	data = append(data, settings...)
 
 	fp := frameParser{r: bytes.NewReader(data)}
-	f, err := fp.ParseNext()
+	f, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.IsType(t, &settingsFrame{}, f)
 	sf := f.(*settingsFrame)
 	require.Equal(t, enabled, sf.Datagram)
 
 	fp = frameParser{r: bytes.NewReader(sf.Append(nil))}
-	f2, err := fp.ParseNext()
+	f2, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.Equal(t, sf, f2)
 }
@@ -235,7 +346,7 @@ func TestParserSettingsFrameDatagramInvalidValue(t *testing.T) {
 	data = quicvarint.Append(data, uint64(len(settings)))
 	data = append(data, settings...)
 	fp := frameParser{r: bytes.NewReader(data)}
-	_, err := fp.ParseNext()
+	_, err := fp.ParseNext(nil)
 	require.EqualError(t, err, "invalid value for SETTINGS_H3_DATAGRAM: 1337")
 }
 
@@ -261,14 +372,14 @@ func testParserSettingsFrameExtendedConnect(t *testing.T, enabled bool) {
 	data = append(data, settings...)
 
 	fp := frameParser{r: bytes.NewReader(data)}
-	f, err := fp.ParseNext()
+	f, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.IsType(t, &settingsFrame{}, f)
 	sf := f.(*settingsFrame)
 	require.Equal(t, enabled, sf.ExtendedConnect)
 
 	fp = frameParser{r: bytes.NewReader(sf.Append(nil))}
-	f2, err := fp.ParseNext()
+	f2, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.Equal(t, sf, f2)
 }
@@ -280,7 +391,7 @@ func TestParserSettingsFrameExtendedConnectInvalidValue(t *testing.T) {
 	data = quicvarint.Append(data, uint64(len(settings)))
 	data = append(data, settings...)
 	fp := frameParser{r: bytes.NewReader(data)}
-	_, err := fp.ParseNext()
+	_, err := fp.ParseNext(nil)
 	require.EqualError(t, err, "invalid value for SETTINGS_ENABLE_CONNECT_PROTOCOL: 1337")
 }
 
@@ -293,14 +404,14 @@ func TestParserGoAwayFrame(t *testing.T) {
 	testFrameParserEOF(t, data)
 
 	fp := frameParser{r: bytes.NewReader(data)}
-	f, err := fp.ParseNext()
+	f, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.IsType(t, &goAwayFrame{}, f)
 	require.Equal(t, quic.StreamID(100), f.(*goAwayFrame).StreamID)
 
 	// write and parse
 	fp = frameParser{r: bytes.NewReader(f.(*goAwayFrame).Append(nil))}
-	f2, err := fp.ParseNext()
+	f2, err := fp.ParseNext(nil)
 	require.NoError(t, err)
 	require.Equal(t, f, f2)
 }
@@ -344,7 +455,7 @@ func testParserHijacking(t *testing.T, hijack bool) {
 			return true, nil
 		},
 	}
-	f, err := fp.ParseNext()
+	f, err := fp.ParseNext(nil)
 	require.True(t, called)
 	if hijack {
 		require.ErrorIs(t, err, errHijacked)
@@ -375,7 +486,7 @@ func TestParserHijackError(t *testing.T) {
 			return true, nil
 		},
 	}
-	_, err := fp.ParseNext()
+	_, err := fp.ParseNext(nil)
 	require.ErrorIs(t, err, errHijacked)
 	require.True(t, called)
 }

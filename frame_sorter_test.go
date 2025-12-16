@@ -1,7 +1,7 @@
 package quic
 
 import (
-	rand "crypto/rand"
+	"crypto/rand"
 	"fmt"
 	"math"
 	mrand "math/rand/v2"

@@ -2,9 +2,9 @@ package quic
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/bogdanfinn/quic-go-utls/internal/handshake"
+	"github.com/bogdanfinn/quic-go-utls/internal/monotime"
 	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
 	"github.com/bogdanfinn/quic-go-utls/internal/qerr"
 	"github.com/bogdanfinn/quic-go-utls/internal/wire"
@@ -106,7 +106,7 @@ func (u *packetUnpacker) UnpackLongHeader(hdr *wire.Header, data []byte) (*unpac
 	}, nil
 }
 
-func (u *packetUnpacker) UnpackShortHeader(rcvTime time.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error) {
+func (u *packetUnpacker) UnpackShortHeader(rcvTime monotime.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error) {
 	opener, err := u.cs.Get1RTTOpener()
 	if err != nil {
 		return 0, 0, 0, nil, err
@@ -144,7 +144,7 @@ func (u *packetUnpacker) unpackLongHeaderPacket(opener handshake.LongHeaderOpene
 	return extHdr, decrypted, nil
 }
 
-func (u *packetUnpacker) unpackShortHeaderPacket(opener handshake.ShortHeaderOpener, rcvTime time.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error) {
+func (u *packetUnpacker) unpackShortHeaderPacket(opener handshake.ShortHeaderOpener, rcvTime monotime.Time, data []byte) (protocol.PacketNumber, protocol.PacketNumberLen, protocol.KeyPhaseBit, []byte, error) {
 	l, pn, pnLen, kp, parseErr := u.unpackShortHeader(opener, data)
 	// If the reserved bits are set incorrectly, we still need to continue unpacking.
 	// This avoids a timing side-channel, which otherwise might allow an attacker
