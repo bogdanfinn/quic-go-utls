@@ -8,29 +8,34 @@ import (
 	"time"
 
 	"github.com/bogdanfinn/quic-go-utls"
-	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
+	"github.com/bogdanfinn/quic-go-utls/http3/qlog"
+	"github.com/bogdanfinn/quic-go-utls/qlogwriter"
 	"github.com/bogdanfinn/quic-go-utls/quicvarint"
+	"github.com/bogdanfinn/quic-go-utls/testutils/events"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestConnReceiveSettings(t *testing.T) {
-	clientConn, serverConn := newConnPair(t)
+	var eventRecorder events.Recorder
+	clientConn, serverConn := newConnPairWithRecorder(t, nil, &eventRecorder)
 
 	conn := newConnection(
 		serverConn.Context(),
 		serverConn,
 		false,
-		protocol.PerspectiveServer,
+		true, // server
 		nil,
 		0,
 	)
 	b := quicvarint.Append(nil, streamTypeControlStream)
-	b = (&settingsFrame{
-		Datagram:        true,
-		ExtendedConnect: true,
-		Other:           map[uint64]uint64{1337: 42},
-	}).Append(b)
+	sf := &settingsFrame{
+		MaxFieldSectionSize: 1234,
+		Datagram:            true,
+		ExtendedConnect:     true,
+		Other:               map[uint64]uint64{1337: 42},
+	}
+	b = sf.Append(b)
 	controlStr, err := clientConn.OpenUniStream()
 	require.NoError(t, err)
 	_, err = controlStr.Write(b)
@@ -50,6 +55,25 @@ func TestConnReceiveSettings(t *testing.T) {
 	require.True(t, settings.EnableDatagrams)
 	require.True(t, settings.EnableExtendedConnect)
 	require.Equal(t, map[uint64]uint64{1337: 42}, settings.Other)
+
+	expectedLen, expectedPayloadLen := expectedFrameLength(t, sf)
+	require.Equal(t,
+		[]qlogwriter.Event{
+			qlog.FrameParsed{
+				StreamID: controlStr.StreamID(),
+				Raw:      qlog.RawInfo{Length: expectedLen, PayloadLength: expectedPayloadLen},
+				Frame: qlog.Frame{
+					Frame: qlog.SettingsFrame{
+						MaxFieldSectionSize: 1234,
+						Datagram:            pointer(true),
+						ExtendedConnect:     pointer(true),
+						Other:               map[uint64]uint64{1337: 42},
+					},
+				},
+			},
+		},
+		filterQlogEventsForFrame(eventRecorder.Events(qlog.FrameParsed{}), qlog.SettingsFrame{}),
+	)
 }
 
 func TestConnRejectDuplicateStreams(t *testing.T) {
@@ -71,7 +95,7 @@ func testConnRejectDuplicateStreams(t *testing.T, typ uint64) {
 		context.Background(),
 		serverConn,
 		false,
-		protocol.PerspectiveServer,
+		true, // server
 		nil,
 		0,
 	)
@@ -116,7 +140,7 @@ func TestConnResetUnknownUniStream(t *testing.T) {
 		context.Background(),
 		serverConn,
 		false,
-		protocol.PerspectiveServer,
+		true, // server
 		nil,
 		0,
 	)
@@ -162,15 +186,18 @@ func TestConnGoAwayFailures(t *testing.T) {
 		b = (&settingsFrame{Other: map[uint64]uint64{settingExtendedConnect: 1337}}).Append(b)
 		testConnControlStreamFailures(t, b, nil, ErrCodeFrameError)
 	})
+
 	t.Run("not a GOAWAY", func(t *testing.T) {
 		b := (&settingsFrame{}).Append(nil)
 		// GOAWAY is the only allowed frame type after SETTINGS
 		b = (&headersFrame{}).Append(b)
 		testConnControlStreamFailures(t, b, nil, ErrCodeFrameUnexpected)
 	})
+
 	t.Run("stream closed before GOAWAY", func(t *testing.T) {
 		testConnControlStreamFailures(t, (&settingsFrame{}).Append(nil), io.EOF, ErrCodeClosedCriticalStream)
 	})
+
 	t.Run("stream reset before GOAWAY", func(t *testing.T) {
 		testConnControlStreamFailures(t,
 			(&settingsFrame{}).Append(nil),
@@ -178,11 +205,13 @@ func TestConnGoAwayFailures(t *testing.T) {
 			ErrCodeClosedCriticalStream,
 		)
 	})
+
 	t.Run("invalid stream ID", func(t *testing.T) {
 		data := (&settingsFrame{}).Append(nil)
 		data = (&goAwayFrame{StreamID: 1}).Append(data)
 		testConnControlStreamFailures(t, data, nil, ErrCodeIDError)
 	})
+
 	t.Run("increased stream ID", func(t *testing.T) {
 		data := (&settingsFrame{}).Append(nil)
 		data = (&goAwayFrame{StreamID: 4}).Append(data)
@@ -198,7 +227,7 @@ func testConnControlStreamFailures(t *testing.T, data []byte, readErr error, exp
 		clientConn.Context(),
 		clientConn,
 		false,
-		protocol.PerspectiveClient,
+		false, // client
 		nil,
 		0,
 	)
@@ -255,13 +284,14 @@ func TestConnGoAway(t *testing.T) {
 }
 
 func testConnGoAway(t *testing.T, withStream bool) {
-	clientConn, serverConn := newConnPair(t)
+	var clientEventRecorder events.Recorder
+	clientConn, serverConn := newConnPairWithRecorder(t, &clientEventRecorder, nil)
 
 	conn := newConnection(
 		clientConn.Context(),
 		clientConn,
 		false,
-		protocol.PerspectiveClient,
+		false, // client
 		nil,
 		0,
 	)
@@ -314,25 +344,37 @@ func testConnGoAway(t *testing.T, withStream bool) {
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for close")
 	}
+
+	expectedLen, expectedPayloadLen := expectedFrameLength(t, &goAwayFrame{StreamID: 8})
+	require.Equal(t,
+		[]qlogwriter.Event{
+			qlog.FrameParsed{
+				StreamID: 3,
+				Raw:      qlog.RawInfo{PayloadLength: expectedPayloadLen, Length: expectedLen},
+				Frame:    qlog.Frame{Frame: qlog.GoAwayFrame{StreamID: 8}},
+			},
+		},
+		filterQlogEventsForFrame(clientEventRecorder.Events(qlog.FrameParsed{}), qlog.GoAwayFrame{StreamID: 8}),
+	)
 }
 
 func TestConnRejectPushStream(t *testing.T) {
 	t.Run("client", func(t *testing.T) {
-		testConnRejectPushStream(t, protocol.PerspectiveClient, ErrCodeStreamCreationError)
+		testConnRejectPushStream(t, false, ErrCodeStreamCreationError)
 	})
 	t.Run("server", func(t *testing.T) {
-		testConnRejectPushStream(t, protocol.PerspectiveServer, ErrCodeIDError)
+		testConnRejectPushStream(t, true, ErrCodeIDError)
 	})
 }
 
-func testConnRejectPushStream(t *testing.T, pers protocol.Perspective, expectedErr ErrCode) {
+func testConnRejectPushStream(t *testing.T, isServer bool, expectedErr ErrCode) {
 	clientConn, serverConn := newConnPair(t)
 
 	conn := newConnection(
 		clientConn.Context(),
 		clientConn,
 		false,
-		pers.Opposite(),
+		!isServer,
 		nil,
 		0,
 	)
@@ -370,7 +412,7 @@ func TestConnInconsistentDatagramSupport(t *testing.T) {
 		clientConn.Context(),
 		clientConn,
 		true,
-		protocol.PerspectiveClient,
+		false, // client
 		nil,
 		0,
 	)
@@ -394,13 +436,14 @@ func TestConnInconsistentDatagramSupport(t *testing.T) {
 }
 
 func TestConnSendAndReceiveDatagram(t *testing.T) {
-	clientConn, serverConn := newConnPairWithDatagrams(t)
+	var eventRecorder events.Recorder
+	clientConn, serverConn := newConnPairWithDatagrams(t, &eventRecorder, nil)
 
 	conn := newConnection(
 		clientConn.Context(),
 		clientConn,
 		true,
-		protocol.PerspectiveClient,
+		false, // client
 		nil,
 		0,
 	)
@@ -419,8 +462,20 @@ func TestConnSendAndReceiveDatagram(t *testing.T) {
 	// since the stream is not open yet, it will be dropped
 	quarterStreamID := quicvarint.Append([]byte{}, strID/4)
 
-	require.NoError(t, serverConn.SendDatagram(append(quarterStreamID, []byte("foo")...)))
+	datagram := append(quarterStreamID, []byte("foo")...)
+	require.NoError(t, serverConn.SendDatagram(datagram))
 	time.Sleep(scaleDuration(10 * time.Millisecond)) // give the datagram a chance to be delivered
+
+	require.Equal(t,
+		[]qlogwriter.Event{
+			qlog.DatagramParsed{
+				QuaterStreamID: strID / 4,
+				Raw:            qlog.RawInfo{Length: len(datagram), PayloadLength: 3},
+			},
+		},
+		eventRecorder.Events(qlog.DatagramParsed{}),
+	)
+	eventRecorder.Clear()
 
 	// don't use stream 0, since that makes it hard to test that the quarter stream ID is used
 	str1, err := conn.openRequestStream(context.Background(), nil, nil, true, 1000)
@@ -429,7 +484,7 @@ func TestConnSendAndReceiveDatagram(t *testing.T) {
 
 	str, err := conn.openRequestStream(context.Background(), nil, nil, true, 1000)
 	require.NoError(t, err)
-	require.Equal(t, protocol.StreamID(strID), str.StreamID())
+	require.Equal(t, quic.StreamID(strID), str.StreamID())
 
 	// now open the stream...
 	require.NoError(t, serverConn.SendDatagram(append(quarterStreamID, []byte("bar")...)))
@@ -446,6 +501,17 @@ func TestConnSendAndReceiveDatagram(t *testing.T) {
 	expected := quicvarint.Append([]byte{}, strID/4)
 	expected = append(expected, []byte("foobaz")...)
 
+	require.Equal(t,
+		[]qlogwriter.Event{
+			qlog.DatagramCreated{
+				QuaterStreamID: strID / 4,
+				Raw:            qlog.RawInfo{PayloadLength: 6, Length: len(expected)},
+			},
+		},
+		eventRecorder.Events(qlog.DatagramCreated{}),
+	)
+	eventRecorder.Clear()
+
 	data, err = serverConn.ReceiveDatagram(ctx)
 	require.NoError(t, err)
 	require.Equal(t, expected, data)
@@ -461,13 +527,13 @@ func TestConnDatagramFailures(t *testing.T) {
 }
 
 func testConnDatagramFailures(t *testing.T, datagram []byte) {
-	clientConn, serverConn := newConnPairWithDatagrams(t)
+	clientConn, serverConn := newConnPairWithDatagrams(t, nil, nil)
 
 	conn := newConnection(
 		clientConn.Context(),
 		clientConn,
 		true,
-		protocol.PerspectiveClient,
+		false, // client
 		nil,
 		0,
 	)

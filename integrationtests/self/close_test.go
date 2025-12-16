@@ -3,6 +3,7 @@ package self_test
 import (
 	"context"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,78 +11,89 @@ import (
 	tls "github.com/bogdanfinn/utls"
 
 	"github.com/bogdanfinn/quic-go-utls"
-	quicproxy "github.com/bogdanfinn/quic-go-utls/integrationtests/tools/proxy"
 	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
+	"github.com/bogdanfinn/quic-go-utls/internal/synctest"
+	"github.com/bogdanfinn/quic-go-utls/testutils/simnet"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestConnectionCloseRetransmission(t *testing.T) {
-	server, err := quic.Listen(
-		newUDPConnLocalhost(t),
-		getTLSConfig(),
-		getQuicConfig(&quic.Config{DisablePathMTUDiscovery: true}),
-	)
-	require.NoError(t, err)
-	defer server.Close()
+	synctest.Test(t, func(t *testing.T) {
+		const rtt = 10 * time.Millisecond
+		serverAddr := &net.UDPAddr{IP: net.ParseIP("1.0.0.2"), Port: 9002}
 
-	var drop atomic.Bool
-	dropped := make(chan []byte, 100)
-	proxy := &quicproxy.Proxy{
-		Conn:       newUDPConnLocalhost(t),
-		ServerAddr: server.Addr().(*net.UDPAddr),
-		DelayPacket: func(quicproxy.Direction, net.Addr, net.Addr, []byte) time.Duration {
-			return scaleDuration(5 * time.Millisecond) // 10ms RTT
-		},
-		DropPacket: func(dir quicproxy.Direction, _, _ net.Addr, b []byte) bool {
-			if drop := drop.Load(); drop && dir == quicproxy.DirectionOutgoing {
-				dropped <- b
-				return true
-			}
-			return false
-		},
-	}
-	require.NoError(t, proxy.Start())
-	defer proxy.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	conn, err := quic.Dial(ctx, newUDPConnLocalhost(t), proxy.LocalAddr(), getTLSClientConfig(), getQuicConfig(nil))
-	require.NoError(t, err)
-	defer conn.CloseWithError(0, "")
-
-	sconn, err := server.Accept(ctx)
-	require.NoError(t, err)
-	time.Sleep(100 * time.Millisecond)
-	drop.Store(true)
-	sconn.CloseWithError(1337, "closing")
-
-	// send 100 packets
-	for range 100 {
-		str, err := conn.OpenStream()
-		require.NoError(t, err)
-		_, err = str.Write([]byte("foobar"))
-		require.NoError(t, err)
-		time.Sleep(time.Millisecond)
-	}
-
-	// Expect retransmissions of the CONNECTION_CLOSE for the
-	// 1st, 2nd, 4th, 8th, 16th, 32th, 64th packet: 7 in total (+1 for the original packet)
-	var packets [][]byte
-	for range 8 {
-		select {
-		case p := <-dropped:
-			packets = append(packets, p)
-		case <-time.After(time.Second):
-			t.Fatal("timeout waiting for CONNECTION_CLOSE retransmission")
+		var drop atomic.Bool
+		var mx sync.Mutex
+		var dropped [][]byte
+		n := &simnet.Simnet{
+			Router: &droppingRouter{Drop: func(p simnet.Packet) bool {
+				shouldDrop := drop.Load() && p.From.String() == serverAddr.String()
+				if shouldDrop {
+					mx.Lock()
+					dropped = append(dropped, p.Data)
+					mx.Unlock()
+				}
+				return shouldDrop
+			}},
 		}
-	}
+		settings := simnet.NodeBiDiLinkSettings{Latency: rtt / 2}
+		clientConn := n.NewEndpoint(&net.UDPAddr{IP: net.ParseIP("1.0.0.1"), Port: 9001}, settings)
+		serverConn := n.NewEndpoint(serverAddr, settings)
+		require.NoError(t, n.Start())
+		defer n.Close()
 
-	// verify all retransmitted packets were identical
-	for i := 1; i < len(packets); i++ {
-		require.Equal(t, packets[0], packets[i])
-	}
+		tr := &quic.Transport{Conn: serverConn}
+		defer tr.Close()
+		server, err := tr.Listen(
+			getTLSConfig(),
+			getQuicConfig(&quic.Config{DisablePathMTUDiscovery: true}),
+		)
+		require.NoError(t, err)
+		defer server.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		conn, err := quic.Dial(ctx, clientConn, server.Addr(), getTLSClientConfig(), getQuicConfig(nil))
+		require.NoError(t, err)
+		defer conn.CloseWithError(0, "")
+
+		sconn, err := server.Accept(ctx)
+		require.NoError(t, err)
+
+		time.Sleep(rtt)
+
+		drop.Store(true)
+		sconn.CloseWithError(1337, "closing")
+
+		// send 100 packets
+		for range 100 {
+			str, err := conn.OpenStream()
+			require.NoError(t, err)
+			_, err = str.Write([]byte("foobar"))
+			require.NoError(t, err)
+
+			// A closed connection will drop packets if a very short queue overflows.
+			// Waiting for one nanosecond makes synctest process the packet before advancing
+			// the synthetic clock.
+			time.Sleep(time.Nanosecond)
+		}
+
+		time.Sleep(rtt)
+
+		mx.Lock()
+		defer mx.Unlock()
+
+		// Expect retransmissions of the CONNECTION_CLOSE for the
+		// 1st, 2nd, 4th, 8th, 16th, 32th, 64th packet: 7 in total (+1 for the original packet)
+		require.Len(t, dropped, 8)
+
+		// verify all retransmitted packets were identical
+		for i := 1; i < len(dropped); i++ {
+			require.Equal(t, dropped[0], dropped[i])
+		}
+	})
 }
 
 func TestDrainServerAcceptQueue(t *testing.T) {

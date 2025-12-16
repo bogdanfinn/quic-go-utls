@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bogdanfinn/quic-go-utls/internal/mocks"
+	"github.com/bogdanfinn/quic-go-utls/internal/monotime"
 	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
 	"github.com/bogdanfinn/quic-go-utls/internal/wire"
 
@@ -29,7 +30,7 @@ func TestStreamDeadlines(t *testing.T) {
 	require.Zero(t, n)
 
 	mockFC.EXPECT().UpdateHighestReceived(protocol.ByteCount(6), false, gomock.Any()).AnyTimes()
-	require.NoError(t, str.handleStreamFrame(&wire.StreamFrame{Data: []byte("foobar")}, time.Now()))
+	require.NoError(t, str.handleStreamFrame(&wire.StreamFrame{Data: []byte("foobar")}, monotime.Now()))
 	n, err = (&readerWithTimeout{Reader: str, Timeout: time.Second}).Read(make([]byte, 6))
 	require.ErrorIs(t, err, os.ErrDeadlineExceeded)
 	require.Zero(t, n)
@@ -49,7 +50,7 @@ func TestStreamCompletion(t *testing.T) {
 			StreamID: str.StreamID(),
 			Data:     []byte("foobar"),
 			Fin:      true,
-		}, time.Now()))
+		}, monotime.Now()))
 		_, err := (&readerWithTimeout{Reader: str, Timeout: time.Second}).Read(make([]byte, 6))
 		require.ErrorIs(t, err, io.EOF)
 		require.True(t, mockCtrl.Satisfied())

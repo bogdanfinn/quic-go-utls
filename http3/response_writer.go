@@ -11,7 +11,9 @@ import (
 
 	http "github.com/bogdanfinn/fhttp"
 
+	"github.com/bogdanfinn/quic-go-utls/http3/qlog"
 	"github.com/quic-go/qpack"
+
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -182,6 +184,13 @@ func (w *responseWriter) doWrite(p []byte) (int, error) {
 	df := &dataFrame{Length: l}
 	w.buf = w.buf[:0]
 	w.buf = df.Append(w.buf)
+	if w.str.qlogger != nil {
+		w.str.qlogger.RecordEvent(qlog.FrameCreated{
+			StreamID: w.str.StreamID(),
+			Raw:      qlog.RawInfo{Length: len(w.buf) + int(l), PayloadLength: int(l)},
+			Frame:    qlog.Frame{Frame: qlog.DataFrame{}},
+		})
+	}
 	if _, err := w.str.writeUnframed(w.buf); err != nil {
 		return 0, maybeReplaceError(err)
 	}
@@ -203,10 +212,14 @@ func (w *responseWriter) doWrite(p []byte) (int, error) {
 }
 
 func (w *responseWriter) writeHeader(status int) error {
+	var headerFields []qlog.HeaderField // only used for qlog
 	var headers bytes.Buffer
 	enc := qpack.NewEncoder(&headers)
 	if err := enc.WriteField(qpack.HeaderField{Name: ":status", Value: strconv.Itoa(status)}); err != nil {
 		return err
+	}
+	if w.str.qlogger != nil {
+		headerFields = append(headerFields, qlog.HeaderField{Name: ":status", Value: strconv.Itoa(status)})
 	}
 
 	// Handle trailer fields
@@ -230,8 +243,13 @@ func (w *responseWriter) writeHeader(status int) error {
 			continue
 		}
 		for index := range v {
-			if err := enc.WriteField(qpack.HeaderField{Name: strings.ToLower(k), Value: v[index]}); err != nil {
+			name := strings.ToLower(k)
+			value := v[index]
+			if err := enc.WriteField(qpack.HeaderField{Name: name, Value: value}); err != nil {
 				return err
+			}
+			if w.str.qlogger != nil {
+				headerFields = append(headerFields, qlog.HeaderField{Name: name, Value: value})
 			}
 		}
 	}
@@ -239,6 +257,10 @@ func (w *responseWriter) writeHeader(status int) error {
 	buf := make([]byte, 0, frameHeaderLen+headers.Len())
 	buf = (&headersFrame{Length: uint64(headers.Len())}).Append(buf)
 	buf = append(buf, headers.Bytes()...)
+
+	if w.str.qlogger != nil {
+		qlogCreatedHeadersFrame(w.str.qlogger, w.str.StreamID(), len(buf), headers.Len(), headerFields)
+	}
 
 	_, err := w.str.writeUnframed(buf)
 	return err
@@ -312,6 +334,7 @@ func (w *responseWriter) writeTrailers() error {
 	}
 
 	var b bytes.Buffer
+	var headerFields []qlog.HeaderField
 	enc := qpack.NewEncoder(&b)
 	for trailer := range w.trailers {
 		trailerName := strings.ToLower(strings.TrimPrefix(trailer, http.TrailerPrefix))
@@ -320,6 +343,9 @@ func (w *responseWriter) writeTrailers() error {
 				if err := enc.WriteField(qpack.HeaderField{Name: trailerName, Value: val}); err != nil {
 					return err
 				}
+				if w.str.qlogger != nil {
+					headerFields = append(headerFields, qlog.HeaderField{Name: trailerName, Value: val})
+				}
 			}
 		}
 	}
@@ -327,6 +353,9 @@ func (w *responseWriter) writeTrailers() error {
 	buf := make([]byte, 0, frameHeaderLen+b.Len())
 	buf = (&headersFrame{Length: uint64(b.Len())}).Append(buf)
 	buf = append(buf, b.Bytes()...)
+	if w.str.qlogger != nil {
+		qlogCreatedHeadersFrame(w.str.qlogger, w.str.StreamID(), len(buf), b.Len(), headerFields)
+	}
 	_, err := w.str.writeUnframed(buf)
 	w.trailerWritten = true
 	return err

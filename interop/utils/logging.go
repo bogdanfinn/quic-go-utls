@@ -10,9 +10,10 @@ import (
 	"strings"
 
 	"github.com/bogdanfinn/quic-go-utls"
+	h3qlog "github.com/bogdanfinn/quic-go-utls/http3/qlog"
 	"github.com/bogdanfinn/quic-go-utls/internal/utils"
-	"github.com/bogdanfinn/quic-go-utls/logging"
 	"github.com/bogdanfinn/quic-go-utls/qlog"
+	"github.com/bogdanfinn/quic-go-utls/qlogwriter"
 )
 
 // GetSSLKeyLog creates a file for the TLS key log
@@ -29,7 +30,7 @@ func GetSSLKeyLog() (io.WriteCloser, error) {
 }
 
 // NewQLOGConnectionTracer create a qlog file in QLOGDIR
-func NewQLOGConnectionTracer(_ context.Context, p logging.Perspective, connID quic.ConnectionID) *logging.ConnectionTracer {
+func NewQLOGConnectionTracer(_ context.Context, isClient bool, connID quic.ConnectionID) qlogwriter.Trace {
 	qlogDir := os.Getenv("QLOGDIR")
 	if len(qlogDir) == 0 {
 		return nil
@@ -46,5 +47,12 @@ func NewQLOGConnectionTracer(_ context.Context, p logging.Perspective, connID qu
 		return nil
 	}
 	log.Printf("Created qlog file: %s\n", path)
-	return qlog.NewConnectionTracer(utils.NewBufferedWriteCloser(bufio.NewWriter(f), f), p, connID)
+	fileSeq := qlogwriter.NewConnectionFileSeq(
+		utils.NewBufferedWriteCloser(bufio.NewWriter(f), f),
+		isClient,
+		connID,
+		[]string{qlog.EventSchema, h3qlog.EventSchema},
+	)
+	go fileSeq.Run()
+	return fileSeq
 }

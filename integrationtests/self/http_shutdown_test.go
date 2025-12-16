@@ -9,9 +9,8 @@ import (
 	"testing"
 	"time"
 
-	tls "github.com/bogdanfinn/utls"
-
 	http "github.com/bogdanfinn/fhttp"
+	tls "github.com/bogdanfinn/utls"
 
 	"github.com/bogdanfinn/quic-go-utls"
 	"github.com/bogdanfinn/quic-go-utls/http3"

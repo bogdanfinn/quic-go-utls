@@ -1,8 +1,9 @@
 package protocol
 
 import (
-	"github.com/bogdanfinn/utls"
 	"fmt"
+
+	tls "github.com/bogdanfinn/utls"
 )
 
 // EncryptionLevel is the encryption level

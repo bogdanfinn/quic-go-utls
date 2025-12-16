@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
-	"time"
 
 	tls "github.com/bogdanfinn/utls"
 
+	"github.com/bogdanfinn/quic-go-utls/internal/monotime"
 	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
 	"github.com/bogdanfinn/quic-go-utls/internal/wire"
 )
@@ -39,7 +39,7 @@ type LongHeaderOpener interface {
 type ShortHeaderOpener interface {
 	headerDecryptor
 	DecodePacketNumber(wirePN protocol.PacketNumber, wirePNLen protocol.PacketNumberLen) protocol.PacketNumber
-	Open(dst, src []byte, rcvTime time.Time, pn protocol.PacketNumber, kp protocol.KeyPhaseBit, associatedData []byte) ([]byte, error)
+	Open(dst, src []byte, rcvTime monotime.Time, pn protocol.PacketNumber, kp protocol.KeyPhaseBit, associatedData []byte) ([]byte, error)
 }
 
 // LongHeaderSealer seals a long header packet

@@ -21,7 +21,9 @@ import (
 	"github.com/bogdanfinn/quic-go-utls/integrationtests/tools"
 	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
 	"github.com/bogdanfinn/quic-go-utls/internal/wire"
-	"github.com/bogdanfinn/quic-go-utls/logging"
+	"github.com/bogdanfinn/quic-go-utls/qlog"
+	"github.com/bogdanfinn/quic-go-utls/qlogwriter"
+	"github.com/bogdanfinn/quic-go-utls/testutils/events"
 
 	"github.com/stretchr/testify/require"
 )
@@ -103,6 +105,43 @@ func getTLSClientConfigWithoutServerName() *tls.Config {
 	return tlsClientConfigWithoutServerName.Clone()
 }
 
+type multiplexedRecorder struct {
+	Recorders []qlogwriter.Recorder
+}
+
+var _ qlogwriter.Recorder = &multiplexedRecorder{}
+
+func (r *multiplexedRecorder) Close() error {
+	for _, recorder := range r.Recorders {
+		recorder.Close()
+	}
+	return nil
+}
+
+func (r *multiplexedRecorder) RecordEvent(ev qlogwriter.Event) {
+	for _, recorder := range r.Recorders {
+		recorder.RecordEvent(ev)
+	}
+}
+
+type multiplexedTrace struct {
+	Traces []qlogwriter.Trace
+}
+
+var _ qlogwriter.Trace = &multiplexedTrace{}
+
+func (t *multiplexedTrace) AddProducer() qlogwriter.Recorder {
+	recorders := make([]qlogwriter.Recorder, 0, len(t.Traces))
+	for _, tr := range t.Traces {
+		recorders = append(recorders, tr.AddProducer())
+	}
+	return &multiplexedRecorder{Recorders: recorders}
+}
+
+func (t *multiplexedTrace) SupportsSchemas(schema string) bool {
+	return true
+}
+
 func getQuicConfig(conf *quic.Config) *quic.Config {
 	if conf == nil {
 		conf = &quic.Config{}
@@ -113,23 +152,19 @@ func getQuicConfig(conf *quic.Config) *quic.Config {
 		return conf
 	}
 	if conf.Tracer == nil {
-		conf.Tracer = func(ctx context.Context, p logging.Perspective, connID quic.ConnectionID) *logging.ConnectionTracer {
-			return logging.NewMultiplexedConnectionTracer(
-				tools.NewQlogConnectionTracer(os.Stdout)(ctx, p, connID),
-				// multiplex it with an empty tracer to check that we're correctly ignoring unset callbacks everywhere
-				&logging.ConnectionTracer{},
-			)
+		conf.Tracer = func(ctx context.Context, isClient bool, connID quic.ConnectionID) qlogwriter.Trace {
+			return tools.NewQlogConnectionTracer(os.Stdout)(ctx, isClient, connID)
 		}
 		return conf
 	}
 	origTracer := conf.Tracer
-	conf.Tracer = func(ctx context.Context, p logging.Perspective, connID quic.ConnectionID) *logging.ConnectionTracer {
-		tr := origTracer(ctx, p, connID)
-		qlogger := tools.NewQlogConnectionTracer(os.Stdout)(ctx, p, connID)
+	conf.Tracer = func(ctx context.Context, isClient bool, connID quic.ConnectionID) qlogwriter.Trace {
+		tr := origTracer(ctx, isClient, connID)
+		qlogger := tools.NewQlogConnectionTracer(os.Stdout)(ctx, isClient, connID)
 		if tr == nil {
 			return qlogger
 		}
-		return logging.NewMultiplexedConnectionTracer(qlogger, tr)
+		return &multiplexedTrace{Traces: []qlogwriter.Trace{tr, qlogger}}
 	}
 	return conf
 }
@@ -139,18 +174,13 @@ func addTracer(tr *quic.Transport) {
 		return
 	}
 	if tr.Tracer == nil {
-		tr.Tracer = logging.NewMultiplexedTracer(
-			tools.QlogTracer(os.Stdout),
-			// multiplex it with an empty tracer to check that we're correctly ignoring unset callbacks everywhere
-			&logging.Tracer{},
-		)
+		tr.Tracer = tools.QlogTracer(os.Stdout).AddProducer()
 		return
 	}
 	origTracer := tr.Tracer
-	tr.Tracer = logging.NewMultiplexedTracer(
-		tools.QlogTracer(os.Stdout),
-		origTracer,
-	)
+	tr.Tracer = &multiplexedRecorder{
+		Recorders: []qlogwriter.Recorder{origTracer, tools.QlogTracer(os.Stdout).AddProducer()},
+	}
 }
 
 func newUDPConnLocalhost(t testing.TB) *net.UDPConn {
@@ -192,71 +222,71 @@ func scaleDuration(d time.Duration) time.Duration {
 	return time.Duration(scaleFactor) * d
 }
 
-func newTracer(tracer *logging.ConnectionTracer) func(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer {
-	return func(context.Context, logging.Perspective, quic.ConnectionID) *logging.ConnectionTracer { return tracer }
+func newTracer(tracer qlogwriter.Recorder) func(context.Context, bool, quic.ConnectionID) qlogwriter.Trace {
+	return func(context.Context, bool, quic.ConnectionID) qlogwriter.Trace {
+		return &events.Trace{Recorder: tracer}
+	}
 }
 
 type packet struct {
 	time   time.Time
-	hdr    *logging.ExtendedHeader
-	frames []logging.Frame
-}
-
-type shortHeaderPacket struct {
-	time   time.Time
-	hdr    *logging.ShortHeader
-	frames []logging.Frame
+	hdr    qlog.PacketHeader
+	frames []qlog.Frame
 }
 
 type packetCounter struct {
-	closed                     chan struct{}
-	sentShortHdr, rcvdShortHdr []shortHeaderPacket
-	rcvdLongHdr                []packet
+	recorder *events.Recorder
 }
 
-func (t *packetCounter) getSentShortHeaderPackets() []shortHeaderPacket {
-	<-t.closed
-	return t.sentShortHdr
+func (t *packetCounter) getSentShortHeaderPackets() []packet {
+	var sentShortHdr []packet
+	for _, ev := range t.recorder.EventsWithTime(qlog.PacketSent{}) {
+		e := ev.Event.(qlog.PacketSent)
+		if e.Header.PacketType != qlog.PacketType1RTT {
+			continue
+		}
+		sentShortHdr = append(sentShortHdr, packet{time: ev.Time, hdr: e.Header, frames: e.Frames})
+	}
+	return sentShortHdr
 }
 
 func (t *packetCounter) getRcvdLongHeaderPackets() []packet {
-	<-t.closed
-	return t.rcvdLongHdr
+	var rcvdLongHdr []packet
+	for _, ev := range t.recorder.EventsWithTime(qlog.PacketReceived{}) {
+		e := ev.Event.(qlog.PacketReceived)
+		if e.Header.PacketType == qlog.PacketType1RTT {
+			continue
+		}
+		rcvdLongHdr = append(rcvdLongHdr, packet{time: ev.Time, hdr: e.Header, frames: e.Frames})
+	}
+	return rcvdLongHdr
 }
 
 func (t *packetCounter) getRcvd0RTTPacketNumbers() []protocol.PacketNumber {
-	packets := t.getRcvdLongHeaderPackets()
 	var zeroRTTPackets []protocol.PacketNumber
-	for _, p := range packets {
-		if p.hdr.Type == protocol.PacketType0RTT {
+	for _, p := range t.getRcvdLongHeaderPackets() {
+		if p.hdr.PacketType == qlog.PacketType0RTT {
 			zeroRTTPackets = append(zeroRTTPackets, p.hdr.PacketNumber)
 		}
 	}
 	return zeroRTTPackets
 }
 
-func (t *packetCounter) getRcvdShortHeaderPackets() []shortHeaderPacket {
-	<-t.closed
-	return t.rcvdShortHdr
+func (t *packetCounter) getRcvdShortHeaderPackets() []packet {
+	var rcvdShortHdr []packet
+	for _, ev := range t.recorder.EventsWithTime(qlog.PacketReceived{}) {
+		e := ev.Event.(qlog.PacketReceived)
+		if e.Header.PacketType != qlog.PacketType1RTT {
+			continue
+		}
+		rcvdShortHdr = append(rcvdShortHdr, packet{time: ev.Time, hdr: e.Header, frames: e.Frames})
+	}
+	return rcvdShortHdr
 }
 
-func newPacketTracer() (*packetCounter, *logging.ConnectionTracer) {
-	c := &packetCounter{closed: make(chan struct{})}
-	return c, &logging.ConnectionTracer{
-		ReceivedLongHeaderPacket: func(hdr *logging.ExtendedHeader, _ logging.ByteCount, _ logging.ECN, frames []logging.Frame) {
-			c.rcvdLongHdr = append(c.rcvdLongHdr, packet{time: time.Now(), hdr: hdr, frames: frames})
-		},
-		ReceivedShortHeaderPacket: func(hdr *logging.ShortHeader, _ logging.ByteCount, _ logging.ECN, frames []logging.Frame) {
-			c.rcvdShortHdr = append(c.rcvdShortHdr, shortHeaderPacket{time: time.Now(), hdr: hdr, frames: frames})
-		},
-		SentShortHeaderPacket: func(hdr *logging.ShortHeader, _ logging.ByteCount, _ logging.ECN, ack *wire.AckFrame, frames []logging.Frame) {
-			if ack != nil {
-				frames = append(frames, ack)
-			}
-			c.sentShortHdr = append(c.sentShortHdr, shortHeaderPacket{time: time.Now(), hdr: hdr, frames: frames})
-		},
-		Close: func() { close(c.closed) },
-	}
+func newPacketTracer() (*packetCounter, qlogwriter.Trace) {
+	c := &packetCounter{recorder: &events.Recorder{}}
+	return c, &events.Trace{Recorder: c.recorder}
 }
 
 type readerWithTimeout struct {

@@ -46,6 +46,15 @@ linters:
               desc: "use standard Go tests"
             - pkg: github.com/onsi/gomega
               desc: "use standard Go tests"
+        http3-internal:
+          list-mode: lax
+          files:
+            - '**/http3/**'
+          deny:
+            - pkg: 'github.com/bogdanfinn/quic-go-utls/internal'
+              desc: 'no dependency on quic-go/internal'
+          allow:
+            - 'github.com/bogdanfinn/quic-go-utls/internal/synctest'
     misspell:
       ignore-rules:
         - ect

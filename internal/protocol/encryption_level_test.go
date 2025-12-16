@@ -1,8 +1,9 @@
 package protocol
 
 import (
-	"github.com/bogdanfinn/utls"
 	"testing"
+
+	tls "github.com/bogdanfinn/utls"
 
 	"github.com/stretchr/testify/require"
 )

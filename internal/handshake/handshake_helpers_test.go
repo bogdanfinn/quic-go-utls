@@ -1,10 +1,11 @@
 package handshake
 
 import (
-	"github.com/bogdanfinn/utls"
 	"encoding/hex"
 	"strings"
 	"testing"
+
+	tls "github.com/bogdanfinn/utls"
 
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +29,7 @@ func TestSplitHexString(t *testing.T) {
 	require.Equal(t, []byte{0xde, 0xad, 0xbe, 0xef}, splitHexString(t, "dead beef"))
 }
 
-var cipherSuites = []*cipherSuite{
+var cipherSuites = []cipherSuite{
 	getCipherSuite(tls.TLS_AES_128_GCM_SHA256),
 	getCipherSuite(tls.TLS_AES_256_GCM_SHA384),
 	getCipherSuite(tls.TLS_CHACHA20_POLY1305_SHA256),

@@ -4,7 +4,6 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/sha1"
-	"github.com/bogdanfinn/utls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -12,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	tls "github.com/bogdanfinn/utls"
 )
 
 // NthBit gets the n-th bit of a byte (counting starts at 0).

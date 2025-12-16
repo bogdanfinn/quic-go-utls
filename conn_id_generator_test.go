@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bogdanfinn/quic-go-utls/internal/monotime"
 	"github.com/bogdanfinn/quic-go-utls/internal/protocol"
 	"github.com/bogdanfinn/quic-go-utls/internal/qerr"
 	"github.com/bogdanfinn/quic-go-utls/internal/wire"
@@ -65,7 +66,7 @@ func testConnIDGeneratorIssueAndRetire(t *testing.T, hasInitialClientDestConnID 
 	// completing the handshake retires the initial client destination connection ID
 	added = added[:0]
 	queuedFrames = queuedFrames[:0]
-	now := time.Now()
+	now := monotime.Now()
 	g.SetHandshakeComplete(now)
 	require.Empty(t, added)
 	require.Empty(t, queuedFrames)
@@ -79,17 +80,17 @@ func testConnIDGeneratorIssueAndRetire(t *testing.T, hasInitialClientDestConnID 
 	}
 
 	// it's invalid to retire a connection ID that hasn't been issued yet
-	err := g.Retire(4, protocol.ParseConnectionID([]byte{3, 3, 3, 3}), time.Now())
+	err := g.Retire(4, protocol.ParseConnectionID([]byte{3, 3, 3, 3}), monotime.Now())
 	require.ErrorIs(t, &qerr.TransportError{ErrorCode: qerr.ProtocolViolation}, err)
 	require.ErrorContains(t, err, "retired connection ID 4 (highest issued: 3)")
 	// it's invalid to retire a connection ID in a packet that uses that connection ID
-	err = g.Retire(3, connIDs[3], time.Now())
+	err = g.Retire(3, connIDs[3], monotime.Now())
 	require.ErrorIs(t, err, &qerr.TransportError{ErrorCode: qerr.ProtocolViolation})
 	require.ErrorContains(t, err, "was used as the Destination Connection ID on this packet")
 
 	// retiring a connection ID makes us issue a new one
-	require.NoError(t, g.Retire(2, protocol.ParseConnectionID([]byte{3, 3, 3, 3}), time.Now()))
-	g.RemoveRetiredConnIDs(time.Now())
+	require.NoError(t, g.Retire(2, protocol.ParseConnectionID([]byte{3, 3, 3, 3}), monotime.Now()))
+	g.RemoveRetiredConnIDs(monotime.Now())
 	require.Equal(t, []protocol.ConnectionID{connIDs[2]}, removed)
 	require.Len(t, queuedFrames, 1)
 	require.EqualValues(t, 4, queuedFrames[0].(*wire.NewConnectionIDFrame).SequenceNumber)
@@ -97,8 +98,8 @@ func testConnIDGeneratorIssueAndRetire(t *testing.T, hasInitialClientDestConnID 
 	removed = removed[:0]
 
 	// duplicate retirements don't do anything
-	require.NoError(t, g.Retire(2, protocol.ParseConnectionID([]byte{3, 3, 3, 3}), time.Now()))
-	g.RemoveRetiredConnIDs(time.Now())
+	require.NoError(t, g.Retire(2, protocol.ParseConnectionID([]byte{3, 3, 3, 3}), monotime.Now()))
+	g.RemoveRetiredConnIDs(monotime.Now())
 	require.Empty(t, queuedFrames)
 	require.Empty(t, removed)
 }
@@ -123,9 +124,9 @@ func TestConnIDGeneratorRetiring(t *testing.T) {
 	require.Empty(t, removed)
 	require.Len(t, added, 5)
 
-	now := time.Now()
+	now := monotime.Now()
 
-	retirements := map[protocol.ConnectionID]time.Time{}
+	retirements := map[protocol.ConnectionID]monotime.Time{}
 	t1 := now.Add(time.Duration(rand.IntN(1000)) * time.Millisecond)
 	retirements[initialConnID] = t1
 	g.SetHandshakeComplete(t1)
@@ -133,14 +134,6 @@ func TestConnIDGeneratorRetiring(t *testing.T) {
 		t2 := now.Add(time.Duration(rand.IntN(1000)) * time.Millisecond)
 		require.NoError(t, g.Retire(uint64(i+1), protocol.ParseConnectionID([]byte{9, 9, 9, 9}), t2))
 		retirements[added[i]] = t2
-
-		var nextRetirement time.Time
-		for _, r := range retirements {
-			if nextRetirement.IsZero() || r.Before(nextRetirement) {
-				nextRetirement = r
-			}
-		}
-		require.Equal(t, nextRetirement, g.NextRetireTime())
 
 		if rand.IntN(2) == 0 {
 			now = now.Add(time.Duration(rand.IntN(500)) * time.Millisecond)
@@ -248,8 +241,8 @@ func testConnIDGeneratorReplaceWithClosed(t *testing.T, hasInitialClientDestConn
 	require.Len(t, added, protocol.MaxIssuedConnectionIDs-1)
 	// Retire two of these connection ID.
 	// This makes us issue two more connection IDs.
-	require.NoError(t, g.Retire(3, protocol.ParseConnectionID([]byte{1, 1, 1, 1}), time.Now()))
-	require.NoError(t, g.Retire(4, protocol.ParseConnectionID([]byte{1, 1, 1, 1}), time.Now()))
+	require.NoError(t, g.Retire(3, protocol.ParseConnectionID([]byte{1, 1, 1, 1}), monotime.Now()))
+	require.NoError(t, g.Retire(4, protocol.ParseConnectionID([]byte{1, 1, 1, 1}), monotime.Now()))
 	require.Len(t, added, protocol.MaxIssuedConnectionIDs+1)
 
 	g.ReplaceWithClosed([]byte("foobar"), time.Second)
@@ -333,15 +326,15 @@ func TestConnIDGeneratorAddConnRunner(t *testing.T) {
 	connIDToRetire = ncid.ConnectionID
 	seqToRetire = ncid.SequenceNumber
 
-	require.NoError(t, g.Retire(seqToRetire, protocol.ParseConnectionID([]byte{3, 3, 3, 3}), time.Now()))
-	g.RemoveRetiredConnIDs(time.Now())
+	require.NoError(t, g.Retire(seqToRetire, protocol.ParseConnectionID([]byte{3, 3, 3, 3}), monotime.Now()))
+	g.RemoveRetiredConnIDs(monotime.Now())
 	require.Equal(t, []protocol.ConnectionID{connIDToRetire}, tracker1.removed)
 	require.Equal(t, []protocol.ConnectionID{connIDToRetire}, tracker2.removed)
 
 	tracker1.removed = nil
 	tracker2.removed = nil
-	g.SetHandshakeComplete(time.Now())
-	g.RemoveRetiredConnIDs(time.Now())
+	g.SetHandshakeComplete(monotime.Now())
+	g.RemoveRetiredConnIDs(monotime.Now())
 	require.Equal(t, []protocol.ConnectionID{clientDestConnID}, tracker1.removed)
 	require.Equal(t, []protocol.ConnectionID{clientDestConnID}, tracker2.removed)
 

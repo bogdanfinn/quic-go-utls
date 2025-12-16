@@ -10,11 +10,11 @@ import (
 )
 
 const (
-	numConnections         uint32  = 2
-	nConnectionBeta        float32 = (float32(numConnections) - 1 + beta) / float32(numConnections)
-	nConnectionBetaLastMax float32 = (float32(numConnections) - 1 + betaLastMax) / float32(numConnections)
-	nConnectionAlpha       float32 = 3 * float32(numConnections) * float32(numConnections) * (1 - nConnectionBeta) / (1 + nConnectionBeta)
-	maxCubicTimeInterval           = 30 * time.Millisecond
+	numConnections         uint32 = 2
+	nConnectionBeta               = (float32(numConnections) - 1 + beta) / float32(numConnections)
+	nConnectionBetaLastMax        = (float32(numConnections) - 1 + betaLastMax) / float32(numConnections)
+	nConnectionAlpha              = 3 * float32(numConnections) * float32(numConnections) * (1 - nConnectionBeta) / (1 + nConnectionBeta)
+	maxCubicTimeInterval          = 30 * time.Millisecond
 )
 
 func renoCwnd(currentCwnd protocol.ByteCount) protocol.ByteCount {
@@ -28,7 +28,7 @@ func cubicConvexCwnd(initialCwnd protocol.ByteCount, rtt, elapsedTime time.Durat
 }
 
 func TestCubicAboveOriginWithTighterBounds(t *testing.T) {
-	clock := mockClock{}
+	var clock mockClock
 	cubic := NewCubic(&clock)
 	cubic.SetNumConnections(int(numConnections))
 
@@ -79,7 +79,7 @@ func TestCubicAboveOriginWithTighterBounds(t *testing.T) {
 }
 
 func TestCubicAboveOriginWithFineGrainedCubing(t *testing.T) {
-	clock := mockClock{}
+	var clock mockClock
 	cubic := NewCubic(&clock)
 	cubic.SetNumConnections(int(numConnections))
 
@@ -106,7 +106,7 @@ func TestCubicAboveOriginWithFineGrainedCubing(t *testing.T) {
 }
 
 func TestCubicHandlesPerAckUpdates(t *testing.T) {
-	clock := mockClock{}
+	var clock mockClock
 	cubic := NewCubic(&clock)
 	cubic.SetNumConnections(int(numConnections))
 
@@ -140,7 +140,7 @@ func TestCubicHandlesPerAckUpdates(t *testing.T) {
 }
 
 func TestCubicHandlesLossEvents(t *testing.T) {
-	clock := mockClock{}
+	var clock mockClock
 	cubic := NewCubic(&clock)
 	cubic.SetNumConnections(int(numConnections))
 
@@ -179,7 +179,7 @@ func TestCubicHandlesLossEvents(t *testing.T) {
 }
 
 func TestCubicBelowOrigin(t *testing.T) {
-	clock := mockClock{}
+	var clock mockClock
 	cubic := NewCubic(&clock)
 	cubic.SetNumConnections(int(numConnections))
 
