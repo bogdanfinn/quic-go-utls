@@ -26,6 +26,24 @@ const maxQuarterStreamID = 1<<60 - 1
 
 var errGoAway = errors.New("connection in graceful shutdown")
 
+// decodeFullQPACK decodes all header fields from a QPACK-encoded header block.
+// This provides the functionality of the removed DecodeFull method in qpack v0.6.0.
+func decodeFullQPACK(decoder *qpack.Decoder, data []byte) ([]qpack.HeaderField, error) {
+	var hfs []qpack.HeaderField
+	decodeFunc := decoder.Decode(data)
+	for {
+		hf, err := decodeFunc()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		hfs = append(hfs, hf)
+	}
+	return hfs, nil
+}
+
 // Conn is an HTTP/3 connection.
 // It has all methods from the quic.Conn expect for AcceptStream, AcceptUniStream,
 // SendDatagram and ReceiveDatagram.
@@ -68,7 +86,7 @@ func newConnection(
 		logger:           logger,
 		idleTimeout:      idleTimeout,
 		enableDatagrams:  enableDatagrams,
-		decoder:          qpack.NewDecoder(func(hf qpack.HeaderField) {}),
+		decoder:          qpack.NewDecoder(),
 		receivedSettings: make(chan struct{}),
 		streams:          make(map[protocol.StreamID]*stateTrackingStream),
 		maxStreamID:      protocol.InvalidStreamID,
@@ -193,7 +211,7 @@ func (c *Conn) decodeTrailers(r io.Reader, l, maxHeaderBytes uint64) (http.Heade
 	if _, err := io.ReadFull(r, b); err != nil {
 		return nil, err
 	}
-	fields, err := c.decoder.DecodeFull(b)
+	fields, err := decodeFullQPACK(c.decoder, b)
 	if err != nil {
 		return nil, err
 	}

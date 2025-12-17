@@ -324,7 +324,7 @@ func (s *RequestStream) ReadResponse() (*http.Response, error) {
 		s.str.CancelWrite(quic.StreamErrorCode(ErrCodeRequestIncomplete))
 		return nil, fmt.Errorf("http3: failed to read response headers: %w", err)
 	}
-	hfs, err := s.decoder.DecodeFull(headerBlock)
+	hfs, err := decodeFullQPACK(s.decoder, headerBlock)
 	if err != nil {
 		// TODO: use the right error code
 		s.str.conn.CloseWithError(quic.ApplicationErrorCode(ErrCodeGeneralProtocolError), "")

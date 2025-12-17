@@ -24,8 +24,8 @@ func decodeRequest(t *testing.T, str io.Reader) map[string]string {
 	data := make([]byte, headersFrame.Length)
 	_, err = io.ReadFull(str, data)
 	require.NoError(t, err)
-	decoder := qpack.NewDecoder(nil)
-	hfs, err := decoder.DecodeFull(data)
+	decoder := qpack.NewDecoder()
+	hfs, err := decodeFullQPACK(decoder, data)
 	require.NoError(t, err)
 	values := make(map[string]string)
 	for _, hf := range hfs {

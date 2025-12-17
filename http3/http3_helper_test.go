@@ -248,7 +248,7 @@ func decodeHeader(t *testing.T, r io.Reader) map[string][]string {
 	t.Helper()
 
 	fields := make(map[string][]string)
-	decoder := qpack.NewDecoder(nil)
+	decoder := qpack.NewDecoder()
 
 	frame, err := (&frameParser{r: r}).ParseNext()
 	require.NoError(t, err)
@@ -257,7 +257,7 @@ func decodeHeader(t *testing.T, r io.Reader) map[string][]string {
 	data := make([]byte, headersFrame.Length)
 	_, err = io.ReadFull(r, data)
 	require.NoError(t, err)
-	hfs, err := decoder.DecodeFull(data)
+	hfs, err := decodeFullQPACK(decoder, data)
 	require.NoError(t, err)
 	for _, p := range hfs {
 		fields[p.Name] = append(fields[p.Name], p.Value)

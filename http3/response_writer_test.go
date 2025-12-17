@@ -24,7 +24,7 @@ func (rw *testResponseWriter) DecodeHeaders(t *testing.T) map[string][]string {
 	rw.Flush()
 	rw.flushTrailers()
 	fields := make(map[string][]string)
-	decoder := qpack.NewDecoder(nil)
+	decoder := qpack.NewDecoder()
 
 	frame, err := (&frameParser{r: rw.buf}).ParseNext()
 	require.NoError(t, err)
@@ -32,7 +32,7 @@ func (rw *testResponseWriter) DecodeHeaders(t *testing.T) map[string][]string {
 	data := make([]byte, frame.(*headersFrame).Length)
 	_, err = io.ReadFull(rw.buf, data)
 	require.NoError(t, err)
-	hfs, err := decoder.DecodeFull(data)
+	hfs, err := decodeFullQPACK(decoder, data)
 	require.NoError(t, err)
 	for _, p := range hfs {
 		fields[p.Name] = append(fields[p.Name], p.Value)
