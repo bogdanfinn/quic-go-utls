@@ -59,6 +59,11 @@ func parseHeaders(decodeFn qpack.DecodeFunc, isRequest bool, sizeLimit int, head
 			}
 			return header{}, &qpackError{err}
 		}
+
+		if h.Name == http.HeaderOrderKey || h.Name == http.PHeaderOrderKey {
+			continue
+		}
+
 		if headerFields != nil {
 			*headerFields = append(*headerFields, h)
 		}

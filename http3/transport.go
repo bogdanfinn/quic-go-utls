@@ -204,6 +204,13 @@ func (t *Transport) roundTripOpt(req *http.Request, opt RoundTripOpt) (*http.Res
 	}
 	for k, vv := range req.Header {
 		if !httpguts.ValidHeaderFieldName(k) {
+			// If the header is magic key, the headers would have been ordered
+			// by this step. It is ok to delete and not raise an error
+			if k == http.HeaderOrderKey || k == http.PHeaderOrderKey {
+				delete(req.Header, k)
+				continue
+			}
+
 			return nil, fmt.Errorf("http3: invalid http header field name %q", k)
 		}
 		for _, v := range vv {
