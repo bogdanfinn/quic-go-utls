@@ -3,20 +3,21 @@ package http3
 import (
 	"bytes"
 	"io"
+	"strings"
 	"testing"
 
 	http "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/fhttp/httptest"
+	"github.com/quic-go/qpack"
+	"github.com/stretchr/testify/require"
 
 	"github.com/bogdanfinn/quic-go-utls"
 	"github.com/bogdanfinn/quic-go-utls/http3/qlog"
 	"github.com/bogdanfinn/quic-go-utls/qlogwriter"
 	"github.com/bogdanfinn/quic-go-utls/testutils/events"
-
-	"github.com/stretchr/testify/require"
 )
 
-func decodeRequest(t *testing.T, str io.Reader, streamID quic.StreamID, eventRecorder *events.Recorder) map[string]string {
+func decodeRequestHeaderFields(t *testing.T, str io.Reader, streamID quic.StreamID, eventRecorder *events.Recorder) []qpack.HeaderField {
 	t.Helper()
 
 	r := io.LimitedReader{R: str, N: 1000}
@@ -29,11 +30,6 @@ func decodeRequest(t *testing.T, str io.Reader, streamID quic.StreamID, eventRec
 	_, err = io.ReadFull(&r, data)
 	require.NoError(t, err)
 	hfs := decodeQpackHeaderFields(t, data)
-	values := make(map[string]string)
-	for _, hf := range hfs {
-		values[hf.Name] = hf.Value
-	}
-
 	headerFields := make([]qlog.HeaderField, len(hfs))
 	for i, hf := range hfs {
 		headerFields[i] = qlog.HeaderField{Name: hf.Name, Value: hf.Value}
@@ -51,8 +47,27 @@ func decodeRequest(t *testing.T, str io.Reader, streamID quic.StreamID, eventRec
 		},
 		eventRecorder.Events(qlog.FrameCreated{}),
 	)
+	return hfs
+}
+
+func decodeRequest(t *testing.T, str io.Reader, streamID quic.StreamID, eventRecorder *events.Recorder) map[string]string {
+	t.Helper()
+
+	hfs := decodeRequestHeaderFields(t, str, streamID, eventRecorder)
+	values := make(map[string]string)
+	for _, hf := range hfs {
+		values[hf.Name] = hf.Value
+	}
 
 	return values
+}
+
+func headerFieldNames(hfs []qpack.HeaderField) []string {
+	names := make([]string, len(hfs))
+	for i, hf := range hfs {
+		names[i] = hf.Name
+	}
+	return names
 }
 
 func TestRequestWriterGetRequestGzip(t *testing.T) {
@@ -62,6 +77,78 @@ func TestRequestWriterGetRequestGzip(t *testing.T) {
 	t.Run("no gzip", func(t *testing.T) {
 		testRequestWriterGzip(t, false)
 	})
+}
+
+func TestRequestWriterPreservesHeaderOrder(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://quic-go.net/", nil)
+	req.Header = http.Header{
+		"Accept":             {"text/html"},
+		"User-Agent":         {"test-agent"},
+		"X-Custom":           {"custom"},
+		"X-Unlisted-B":       {"b"},
+		"X-Unlisted-A":       {"a"},
+		http.HeaderOrderKey:  {"accept", "user-agent", "x-custom"},
+		http.PHeaderOrderKey: {":path", ":scheme", ":authority", ":method"},
+	}
+
+	var eventRecorder events.Recorder
+	buf := &bytes.Buffer{}
+	require.NoError(t, newRequestWriter().WriteRequestHeader(buf, req, false, 42, &eventRecorder))
+	hfs := decodeRequestHeaderFields(t, buf, 42, &eventRecorder)
+	require.Equal(t, []string{
+		":method",
+		":authority",
+		":scheme",
+		":path",
+		"accept",
+		"user-agent",
+		"x-custom",
+		"x-unlisted-a",
+		"x-unlisted-b",
+	}, headerFieldNames(hfs))
+	require.NotContains(t, headerFieldNames(hfs), strings.ToLower(http.HeaderOrderKey))
+	require.NotContains(t, headerFieldNames(hfs), strings.ToLower(http.PHeaderOrderKey))
+}
+
+func TestRequestWriterOrdersAutomaticHeaders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "https://quic-go.net/", strings.NewReader("test"))
+	req.Header[http.HeaderOrderKey] = []string{"priority", "accept-encoding", "content-length", "user-agent"}
+
+	var eventRecorder events.Recorder
+	buf := &bytes.Buffer{}
+	rw := newRequestWriterWithPseudoHeaderOrder(nil, 1)
+	require.NoError(t, rw.WriteRequestHeader(buf, req, true, 42, &eventRecorder))
+	hfs := decodeRequestHeaderFields(t, buf, 42, &eventRecorder)
+	require.Equal(t, []string{
+		":method",
+		":authority",
+		":scheme",
+		":path",
+		"priority",
+		"accept-encoding",
+		"content-length",
+		"user-agent",
+	}, headerFieldNames(hfs))
+}
+
+func TestRequestWriterDoesNotDuplicatePriority(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://quic-go.net/", nil)
+	req.Header["Priority"] = []string{"u=3"}
+	req.Header[http.HeaderOrderKey] = []string{"priority"}
+
+	var eventRecorder events.Recorder
+	buf := &bytes.Buffer{}
+	rw := newRequestWriterWithPseudoHeaderOrder(nil, 1)
+	require.NoError(t, rw.WriteRequestHeader(buf, req, false, 42, &eventRecorder))
+	hfs := decodeRequestHeaderFields(t, buf, 42, &eventRecorder)
+
+	var priorities []qpack.HeaderField
+	for _, hf := range hfs {
+		if hf.Name == "priority" {
+			priorities = append(priorities, hf)
+		}
+	}
+	require.Equal(t, []qpack.HeaderField{{Name: "priority", Value: "u=3"}}, priorities)
 }
 
 func testRequestWriterGzip(t *testing.T, gzip bool) {

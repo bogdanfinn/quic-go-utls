@@ -13,12 +13,11 @@ import (
 	http "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/fhttp/httptest"
 	tls "github.com/bogdanfinn/utls"
-
-	"github.com/bogdanfinn/quic-go-utls"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+
+	"github.com/bogdanfinn/quic-go-utls"
 )
 
 type mockBody struct {
@@ -129,6 +128,22 @@ func TestRequestValidation(t *testing.T) {
 			require.True(t, tt.req.Body.(*mockBody).closed)
 		})
 	}
+}
+
+func TestTransportPreservesHeaderOrderingMetadata(t *testing.T) {
+	tr := &Transport{
+		Dial: func(context.Context, string, *tls.Config, *quic.Config) (*quic.Conn, error) {
+			return nil, errors.New("test")
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://quic-go.net/", nil)
+	req.Header[http.HeaderOrderKey] = []string{"accept", "user-agent"}
+	req.Header[http.PHeaderOrderKey] = []string{":method", ":authority", ":scheme", ":path"}
+
+	_, err := tr.RoundTrip(req)
+	require.EqualError(t, err, "test")
+	require.Equal(t, []string{"accept", "user-agent"}, req.Header[http.HeaderOrderKey])
+	require.Equal(t, []string{":method", ":authority", ":scheme", ":path"}, req.Header[http.PHeaderOrderKey])
 }
 
 func TestTransportDialHostname(t *testing.T) {
