@@ -15,7 +15,6 @@ import (
 	http "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/fhttp/httptrace"
 	tls "github.com/bogdanfinn/utls"
-
 	"golang.org/x/net/http/httpguts"
 
 	"github.com/bogdanfinn/quic-go-utls"
@@ -227,10 +226,11 @@ func (t *Transport) roundTripOpt(req *http.Request, opt RoundTripOpt) (*http.Res
 	}
 	for k, vv := range req.Header {
 		if !httpguts.ValidHeaderFieldName(k) {
-			// If the header is magic key, the headers would have been ordered
-			// by this step. It is ok to delete and not raise an error
+			// [http.HeaderOrderKey] magic ordering key is consumed by the request
+			// writer to order regular headers.
+			// [http.PHeaderOrderKey] is not used for http3 therefore not deleted on
+			// this step to avoid req.Header mutation.
 			if k == http.HeaderOrderKey || k == http.PHeaderOrderKey {
-				delete(req.Header, k)
 				continue
 			}
 

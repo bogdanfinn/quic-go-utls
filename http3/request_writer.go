@@ -12,7 +12,7 @@ import (
 
 	http "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/fhttp/httptrace"
-
+	"github.com/quic-go/qpack"
 	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/http2/hpack"
 	"golang.org/x/net/idna"
@@ -20,17 +20,16 @@ import (
 	"github.com/bogdanfinn/quic-go-utls"
 	"github.com/bogdanfinn/quic-go-utls/http3/qlog"
 	"github.com/bogdanfinn/quic-go-utls/qlogwriter"
-	"github.com/quic-go/qpack"
 )
 
 const bodyCopyBufferSize = 8 * 1024
 
 type requestWriter struct {
-	mutex              sync.Mutex
-	encoder            *qpack.Encoder
-	headerBuf          *bytes.Buffer
-	pseudoHeaderOrder  []string
-	priorityParam      uint32
+	mutex             sync.Mutex
+	encoder           *qpack.Encoder
+	headerBuf         *bytes.Buffer
+	pseudoHeaderOrder []string
+	priorityParam     uint32
 }
 
 func newRequestWriter() *requestWriter {
@@ -147,7 +146,7 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 			if k == http.HeaderOrderKey || k == http.PHeaderOrderKey {
 				continue
 			}
-			
+
 			return nil, fmt.Errorf("invalid HTTP header name %q", k)
 		}
 		for _, v := range vv {
@@ -184,60 +183,76 @@ func (w *requestWriter) encodeHeaders(req *http.Request, addGzipHeader bool, tra
 			f(name, value)
 		}
 
-		// Add priority header if priorityParam is set (RFC 9218)
-		// Chrome sends priority as "u=0, i" for highest priority documents
-		// NOT "u=984832" - that was a misunderstanding
-		if w.priorityParam > 0 {
-			// Send standard Chrome priority format
-			f("priority", "u=0, i")
-		}
-
-		if trailers != "" {
-			f("trailer", trailers)
-		}
-
-		var didUA bool
-		for k, vv := range req.Header {
-			if strings.EqualFold(k, "host") || strings.EqualFold(k, "content-length") {
-				// Host is :authority, already sent.
-				// Content-Length is automatic, set below.
+		// Normalize field names once.
+		headers := make(http.Header, len(req.Header)+5)
+		for name, values := range req.Header {
+			if name == http.HeaderOrderKey || name == http.PHeaderOrderKey {
+				// Skip magic ordering keys.
 				continue
-			} else if strings.EqualFold(k, "connection") || strings.EqualFold(k, "proxy-connection") ||
-				strings.EqualFold(k, "transfer-encoding") || strings.EqualFold(k, "upgrade") ||
-				strings.EqualFold(k, "keep-alive") {
+			}
+			name = strings.ToLower(name)
+			headers[name] = append(headers[name], values...)
+		}
+
+		// Add all automatically generated fields before sorting.
+		delete(headers, "content-length")
+		if shouldSendReqContentLength(req.Method, contentLength) {
+			headers["content-length"] = []string{strconv.FormatInt(contentLength, 10)}
+		}
+		if _, ok := headers["accept-encoding"]; !ok && addGzipHeader {
+			headers["accept-encoding"] = []string{"gzip"}
+		}
+		if _, ok := headers["priority"]; !ok && w.priorityParam > 0 {
+			// Send standard Chrome priority format if priorityParam is set (RFC 9218).
+			headers["priority"] = []string{"u=0, i"}
+		}
+		if _, ok := headers["trailer"]; !ok && trailers != "" {
+			headers["trailer"] = []string{trailers}
+		}
+		// Match Go's http1 behavior: at most one
+		// User-Agent. If set to nil or empty string,
+		// then omit it. Otherwise if not mentioned,
+		// include the default.
+		if values, ok := headers["user-agent"]; ok {
+			if len(values) == 0 || values[0] == "" {
+				delete(headers, "user-agent")
+			} else {
+				headers["user-agent"] = values[:1]
+			}
+		} else {
+			headers["user-agent"] = []string{defaultUserAgent}
+		}
+
+		var order map[string]int
+		if headerOrder, ok := req.Header[http.HeaderOrderKey]; ok {
+			order = make(map[string]int, len(headerOrder))
+			for i, name := range headerOrder {
+				order[strings.ToLower(name)] = i
+			}
+		}
+		sortedHeaders, _ := headers.SortedKeyValuesBy(order, nil)
+
+		for _, kv := range sortedHeaders {
+			k, vv := kv.Key, kv.Values
+			if len(vv) == 0 {
+				continue
+			}
+
+			if k == "host" {
+				// Host is :authority, already sent.
+				continue
+			} else if k == "connection" || k == "proxy-connection" || k == "transfer-encoding" ||
+				k == "upgrade" || k == "keep-alive" {
 				// Per 8.1.2.2 Connection-Specific Header
 				// Fields, don't send connection-specific
 				// fields. We have already checked if any
 				// are error-worthy so just ignore the rest.
 				continue
-			} else if strings.EqualFold(k, "user-agent") {
-				// Match Go's http1 behavior: at most one
-				// User-Agent. If set to nil or empty string,
-				// then omit it. Otherwise if not mentioned,
-				// include the default (below).
-				didUA = true
-				if len(vv) < 1 {
-					continue
-				}
-				vv = vv[:1]
-				if vv[0] == "" {
-					continue
-				}
-
 			}
 
 			for _, v := range vv {
 				f(k, v)
 			}
-		}
-		if shouldSendReqContentLength(req.Method, contentLength) {
-			f("content-length", strconv.FormatInt(contentLength, 10))
-		}
-		if addGzipHeader {
-			f("accept-encoding", "gzip")
-		}
-		if !didUA {
-			f("user-agent", defaultUserAgent)
 		}
 	}
 
